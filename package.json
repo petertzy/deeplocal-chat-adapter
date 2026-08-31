@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "deeplocal-chat-adapter",
+  "displayName": "DeepLocal Chat Adapter",
+  "description": "Connect DeepLocal OpenAI-compatible models to VS Code chat.",
+  "version": "0.1.0",
+  "publisher": "local-dev",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "deeplocal",
+    "local llm",
+    "openai compatible"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:deeplocal-chat.refreshModels",
+    "onCommand:deeplocal-chat.checkConnection",
+    "onCommand:deeplocal-chat.openSettings",
+    "onCommand:deeplocal-chat.openChat",
+    "onView:deeplocal-chat.chatView"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "secondarySideBar": [
+        {
+          "id": "deeplocal-chat-sidebar",
+          "title": "DeepLocal",
+          "icon": "resources/deeplocal.svg"
+        }
+      ]
+    },
+    "views": {
+      "deeplocal-chat-sidebar": [
+        {
+          "id": "deeplocal-chat.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DeepLocal",
+      "properties": {
+        "deeplocal-chat.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:14567/v1",
+          "description": "DeepLocal OpenAI-compatible API base URL."
+        },
+        "deeplocal-chat.apiKey": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "ignoreSync": true,
+          "description": "Optional API key sent as a Bearer token to DeepLocal."
+        },
+        "deeplocal-chat.requestTimeout": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "description": "Maximum request time in milliseconds."
+        },
+        "deeplocal-chat.maxInputTokens": {
+          "type": "number",
+          "default": 131072,
+          "minimum": 1024,
+          "description": "Advertised maximum input tokens for Copilot Chat."
+        },
+        "deeplocal-chat.maxOutputTokens": {
+          "type": "number",
+          "default": 16384,
+          "minimum": 128,
+          "description": "Advertised maximum output tokens for Copilot Chat."
+        },
+        "deeplocal-chat.enableToolCalling": {
+          "type": "boolean",
+          "default": true,
+          "description": "Expose Copilot Chat tools to models through OpenAI-compatible tool calling."
+        },
+        "deeplocal-chat.injectSystemPrompt": {
+          "type": "boolean",
+          "default": true,
+          "description": "Add a compact coding-assistant system prompt before user messages."
+        },
+        "deeplocal-chat.logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warning",
+            "error",
+            "off"
+          ],
+          "default": "info",
+          "description": "Controls extension output logging."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "deeplocal-chat.refreshModels",
+        "title": "DeepLocal: Refresh Models"
+      },
+      {
+        "command": "deeplocal-chat.checkConnection",
+        "title": "DeepLocal: Check Connection"
+      },
+      {
+        "command": "deeplocal-chat.openSettings",
+        "title": "DeepLocal: Open Settings"
+      },
+      {
+        "command": "deeplocal-chat.openChat",
+        "title": "DeepLocal: Open Chat"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && node esbuild.js",
+    "check-types": "tsc --noEmit",
+    "watch": "npm-run-all -p watch:*",
+    "watch:bundle": "node esbuild.js --watch",
+    "watch:types": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && node esbuild.js --production",
+    "package:vsix": "vsce package",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/vscode": "^1.104.0",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.9",
+    "eslint": "^8.57.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.2"
+  }
+}
