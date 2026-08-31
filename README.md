@@ -40,6 +40,12 @@ Use this when you want to test the extension from VS Code's normal Extensions en
 npm run install:local
 ```
 
+Or run the script directly:
+
+```bash
+./scripts/install-local.sh
+```
+
 The script will install dependencies, build a VSIX package, and install it into VS Code with:
 
 ```bash
