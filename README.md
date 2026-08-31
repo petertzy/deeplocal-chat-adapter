@@ -64,6 +64,22 @@ Then open DeepLocal from the Extensions/Activity Bar entry, or run this command 
 DeepLocal: Open
 ```
 
+## Editing The Active File
+
+Open a source file in the editor, then open DeepLocal and enable:
+
+```text
+Edit active file
+```
+
+Ask for a change such as:
+
+```text
+Add input validation and keep the existing behavior.
+```
+
+DeepLocal will receive the active file content and generate a complete replacement for that file. VS Code will ask for confirmation before applying the generated content.
+
 If the `code` command is not available, open VS Code and run:
 
 ```text

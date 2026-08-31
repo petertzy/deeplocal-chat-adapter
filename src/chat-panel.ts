@@ -8,6 +8,7 @@ interface WebviewMessage {
   type: 'ready' | 'send' | 'refreshModels' | 'clear';
   text?: string;
   model?: string;
+  editActiveFile?: boolean;
 }
 
 export class ChatPanel implements vscode.WebviewViewProvider {
@@ -59,7 +60,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       return;
     }
 
-    await this.sendPrompt(model, text);
+    await this.sendPrompt(model, text, Boolean(message.editActiveFile));
   }
 
   private async sendModels(): Promise<void> {
@@ -74,10 +75,12 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  private async sendPrompt(model: string, text: string): Promise<void> {
+  private async sendPrompt(model: string, text: string, editActiveFile: boolean): Promise<void> {
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.activeRequestId = requestId;
-    this.history.push({ role: 'user', content: text });
+    const activeFile = editActiveFile ? getActiveTextFile() : undefined;
+    const userMessage = activeFile ? buildEditPrompt(text, activeFile) : text;
+    this.history.push({ role: 'user', content: userMessage });
 
     this.post({ type: 'assistantStart' });
 
@@ -85,7 +88,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     if (getConfig().injectSystemPrompt && messages[0]?.role !== 'system') {
       messages.unshift({
         role: 'system',
-        content: 'You are a concise assistant. Reply in the same language as the user unless asked otherwise.',
+        content: activeFile
+          ? 'You are a careful coding assistant. Return only the complete updated file in one fenced code block. Do not add explanations.'
+          : 'You are a concise assistant. Reply in the same language as the user unless asked otherwise.',
       });
     }
 
@@ -106,6 +111,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
       this.history.push({ role: 'assistant', content: answer });
       this.post({ type: 'assistantDone' });
+      if (activeFile) {
+        await this.applyGeneratedFile(activeFile, answer);
+      }
     } catch (error) {
       this.logger.error(`DeepLocal chat failed: ${messageOf(error)}`);
       this.postError(`DeepLocal chat failed: ${messageOf(error)}`);
@@ -121,6 +129,84 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   private post(message: unknown): void {
     this.view?.webview.postMessage(message);
   }
+
+  private async applyGeneratedFile(activeFile: ActiveTextFile, answer: string): Promise<void> {
+    const nextContent = extractUpdatedFile(answer);
+    if (!nextContent) {
+      this.postError('DeepLocal did not return a complete file block to apply.');
+      return;
+    }
+
+    const choice = await vscode.window.showWarningMessage(
+      `Apply DeepLocal changes to ${activeFile.document.fileName}?`,
+      { modal: true },
+      'Apply',
+    );
+
+    if (choice !== 'Apply') {
+      this.post({ type: 'notice', message: 'File update skipped.' });
+      return;
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    const fullRange = new vscode.Range(
+      activeFile.document.positionAt(0),
+      activeFile.document.positionAt(activeFile.document.getText().length),
+    );
+    edit.replace(activeFile.document.uri, fullRange, nextContent);
+
+    const applied = await vscode.workspace.applyEdit(edit);
+    if (!applied) {
+      this.postError('VS Code could not apply the generated file update.');
+      return;
+    }
+
+    await activeFile.document.save();
+    this.post({ type: 'notice', message: 'Applied changes to the active file.' });
+  }
+}
+
+interface ActiveTextFile {
+  document: vscode.TextDocument;
+  languageId: string;
+  content: string;
+}
+
+function getActiveTextFile(): ActiveTextFile | undefined {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document.uri.scheme !== 'file') {
+    vscode.window.showWarningMessage('Open a file editor before using DeepLocal file editing.');
+    return undefined;
+  }
+
+  return {
+    document: editor.document,
+    languageId: editor.document.languageId,
+    content: editor.document.getText(),
+  };
+}
+
+function buildEditPrompt(instruction: string, file: ActiveTextFile): string {
+  return [
+    'Update the active file according to this request:',
+    instruction,
+    '',
+    `File path: ${file.document.fileName}`,
+    `Language: ${file.languageId}`,
+    '',
+    'Current file content:',
+    `\`\`\`${file.languageId}`,
+    file.content,
+    '```',
+    '',
+    'Return only the complete updated file content in a single fenced code block.',
+  ].join('\n');
+}
+
+function extractUpdatedFile(answer: string): string | undefined {
+  const fence = answer.match(/```[^\n\r]*\r?\n([\s\S]*?)\r?\n```/);
+  const content = fence?.[1] ?? answer.trim();
+  return content.trim().length > 0 ? content : undefined;
 }
 
 function renderHtml(webview: vscode.Webview): string {
@@ -205,6 +291,14 @@ function renderHtml(webview: vscode.Webview): string {
       grid-template-columns: auto 1fr;
       gap: 6px;
     }
+    label.option {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      opacity: 0.9;
+      user-select: none;
+    }
     textarea {
       min-height: 64px;
       resize: vertical;
@@ -228,6 +322,10 @@ function renderHtml(webview: vscode.Webview): string {
         <button id="clear">Clear</button>
         <button id="send">Send</button>
       </div>
+      <label class="option">
+        <input id="editActiveFile" type="checkbox">
+        <span>Edit active file</span>
+      </label>
     </footer>
   </div>
   <script nonce="${nonce}">
@@ -238,6 +336,7 @@ function renderHtml(webview: vscode.Webview): string {
     const prompt = document.getElementById('prompt');
     const send = document.getElementById('send');
     const clear = document.getElementById('clear');
+    const editActiveFile = document.getElementById('editActiveFile');
     let currentAssistant;
 
     function addMessage(role, text, className) {
@@ -280,6 +379,9 @@ function renderHtml(webview: vscode.Webview): string {
         addMessage('Error', msg.message, 'error');
         send.disabled = false;
       }
+      if (msg.type === 'notice') {
+        addMessage('DeepLocal', msg.message);
+      }
     });
 
     send.addEventListener('click', () => {
@@ -289,7 +391,12 @@ function renderHtml(webview: vscode.Webview): string {
       }
       addMessage('You', text);
       prompt.value = '';
-      vscode.postMessage({ type: 'send', text, model: model.value });
+      vscode.postMessage({
+        type: 'send',
+        text,
+        model: model.value,
+        editActiveFile: editActiveFile.checked,
+      });
     });
 
     prompt.addEventListener('keydown', (event) => {
