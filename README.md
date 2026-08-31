@@ -32,6 +32,38 @@ Use the DeepLocal view in the Secondary Side Bar to open the built-in chat view.
 DeepLocal: Open
 ```
 
+## Install Locally In VS Code
+
+Use this when you want to test the extension from VS Code's normal Extensions environment instead of the Extension Development Host.
+
+```bash
+npm run install:local
+```
+
+The script will install dependencies, build a VSIX package, and install it into VS Code with:
+
+```bash
+code --install-extension deeplocal-0.1.0.vsix --force
+```
+
+After installation, reload VS Code:
+
+```text
+Developer: Reload Window
+```
+
+Then open DeepLocal from the Extensions/Activity Bar entry, or run this command from the command palette:
+
+```text
+DeepLocal: Open
+```
+
+If the `code` command is not available, open VS Code and run:
+
+```text
+Shell Command: Install 'code' command in PATH
+```
+
 ## Settings
 
 - `deeplocal.baseUrl`: DeepLocal API base URL
