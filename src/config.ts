@@ -12,7 +12,7 @@ export interface DeepLocalConfig {
 }
 
 export function getConfig(): DeepLocalConfig {
-  const config = vscode.workspace.getConfiguration('deeplocal-chat');
+  const config = vscode.workspace.getConfiguration('deeplocal');
 
   return {
     baseUrl: normalizeBaseUrl(config.get<string>('baseUrl', 'http://127.0.0.1:14567/v1')),

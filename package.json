@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "deeplocal-chat-adapter",
-  "displayName": "DeepLocal Chat Adapter",
-  "description": "Connect DeepLocal OpenAI-compatible models to VS Code chat.",
+  "name": "deeplocal",
+  "displayName": "DeepLocal",
+  "description": "Connect DeepLocal OpenAI-compatible models to VS Code.",
   "version": "0.1.0",
   "publisher": "local-dev",
   "private": true,
@@ -21,28 +21,28 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:deeplocal-chat.refreshModels",
-    "onCommand:deeplocal-chat.checkConnection",
-    "onCommand:deeplocal-chat.openSettings",
-    "onCommand:deeplocal-chat.openChat",
-    "onView:deeplocal-chat.chatView"
+    "onCommand:deeplocal.refreshModels",
+    "onCommand:deeplocal.checkConnection",
+    "onCommand:deeplocal.openSettings",
+    "onCommand:deeplocal.open",
+    "onView:deeplocal.view"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "secondarySideBar": [
         {
-          "id": "deeplocal-chat-sidebar",
+          "id": "deeplocal-sidebar",
           "title": "DeepLocal",
           "icon": "resources/deeplocal.svg"
         }
       ]
     },
     "views": {
-      "deeplocal-chat-sidebar": [
+      "deeplocal-sidebar": [
         {
-          "id": "deeplocal-chat.chatView",
-          "name": "Chat",
+          "id": "deeplocal.view",
+          "name": "DeepLocal",
           "type": "webview"
         }
       ]
@@ -50,47 +50,47 @@
     "configuration": {
       "title": "DeepLocal",
       "properties": {
-        "deeplocal-chat.baseUrl": {
+        "deeplocal.baseUrl": {
           "type": "string",
           "default": "http://127.0.0.1:14567/v1",
           "description": "DeepLocal OpenAI-compatible API base URL."
         },
-        "deeplocal-chat.apiKey": {
+        "deeplocal.apiKey": {
           "type": "string",
           "default": "",
           "scope": "machine",
           "ignoreSync": true,
           "description": "Optional API key sent as a Bearer token to DeepLocal."
         },
-        "deeplocal-chat.requestTimeout": {
+        "deeplocal.requestTimeout": {
           "type": "number",
           "default": 120000,
           "minimum": 1000,
           "description": "Maximum request time in milliseconds."
         },
-        "deeplocal-chat.maxInputTokens": {
+        "deeplocal.maxInputTokens": {
           "type": "number",
           "default": 131072,
           "minimum": 1024,
-          "description": "Advertised maximum input tokens for Copilot Chat."
+          "description": "Advertised maximum input tokens."
         },
-        "deeplocal-chat.maxOutputTokens": {
+        "deeplocal.maxOutputTokens": {
           "type": "number",
           "default": 16384,
           "minimum": 128,
-          "description": "Advertised maximum output tokens for Copilot Chat."
+          "description": "Advertised maximum output tokens."
         },
-        "deeplocal-chat.enableToolCalling": {
+        "deeplocal.enableToolCalling": {
           "type": "boolean",
           "default": true,
-          "description": "Expose Copilot Chat tools to models through OpenAI-compatible tool calling."
+          "description": "Expose editor tools to models through OpenAI-compatible tool calling."
         },
-        "deeplocal-chat.injectSystemPrompt": {
+        "deeplocal.injectSystemPrompt": {
           "type": "boolean",
           "default": true,
           "description": "Add a compact coding-assistant system prompt before user messages."
         },
-        "deeplocal-chat.logLevel": {
+        "deeplocal.logLevel": {
           "type": "string",
           "enum": [
             "debug",
@@ -106,20 +106,20 @@
     },
     "commands": [
       {
-        "command": "deeplocal-chat.refreshModels",
+        "command": "deeplocal.refreshModels",
         "title": "DeepLocal: Refresh Models"
       },
       {
-        "command": "deeplocal-chat.checkConnection",
+        "command": "deeplocal.checkConnection",
         "title": "DeepLocal: Check Connection"
       },
       {
-        "command": "deeplocal-chat.openSettings",
+        "command": "deeplocal.openSettings",
         "title": "DeepLocal: Open Settings"
       },
       {
-        "command": "deeplocal-chat.openChat",
-        "title": "DeepLocal: Open Chat"
+        "command": "deeplocal.open",
+        "title": "DeepLocal: Open"
       }
     ]
   },

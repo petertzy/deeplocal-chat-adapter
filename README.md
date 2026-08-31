@@ -1,6 +1,6 @@
-# DeepLocal Chat Adapter
+# DeepLocal
 
-DeepLocal Chat Adapter is a small VS Code extension that exposes local DeepLocal models to VS Code chat through the language model provider API.
+DeepLocal is a small VS Code extension that exposes local DeepLocal models inside VS Code.
 
 The default API endpoint is:
 
@@ -29,13 +29,13 @@ Open this folder in VS Code and press `F5` to launch an Extension Development Ho
 Use the DeepLocal view in the Secondary Side Bar to open the built-in chat view. You can also focus it from the command palette:
 
 ```text
-DeepLocal: Open Chat
+DeepLocal: Open
 ```
 
 ## Settings
 
-- `deeplocal-chat.baseUrl`: DeepLocal API base URL
-- `deeplocal-chat.apiKey`: optional Bearer token
-- `deeplocal-chat.requestTimeout`: request timeout in milliseconds
-- `deeplocal-chat.enableToolCalling`: forward chat tools to DeepLocal
-- `deeplocal-chat.injectSystemPrompt`: prepend a compact coding-assistant instruction
+- `deeplocal.baseUrl`: DeepLocal API base URL
+- `deeplocal.apiKey`: optional Bearer token
+- `deeplocal.requestTimeout`: request timeout in milliseconds
+- `deeplocal.enableToolCalling`: forward editor tools to DeepLocal
+- `deeplocal.injectSystemPrompt`: prepend a compact assistant instruction

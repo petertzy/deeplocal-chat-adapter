@@ -9,7 +9,7 @@ let provider: DeepLocalProvider | undefined;
 let chatPanel: ChatPanel | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const output = vscode.window.createOutputChannel('DeepLocal Chat Adapter');
+  const output = vscode.window.createOutputChannel('DeepLocal');
   const logger = new Logger(output);
   const client = new DeepLocalClient(logger);
 
@@ -19,9 +19,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     output,
     provider,
-    vscode.window.registerWebviewViewProvider('deeplocal-chat.chatView', chatPanel),
+    vscode.window.registerWebviewViewProvider('deeplocal.view', chatPanel),
     vscode.lm.registerLanguageModelChatProvider('deeplocal', provider),
-    vscode.commands.registerCommand('deeplocal-chat.refreshModels', async () => {
+    vscode.commands.registerCommand('deeplocal.refreshModels', async () => {
       output.show(true);
       try {
         await provider?.refreshModels();
@@ -32,7 +32,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showErrorMessage(`DeepLocal model refresh failed: ${message}`);
       }
     }),
-    vscode.commands.registerCommand('deeplocal-chat.checkConnection', async () => {
+    vscode.commands.registerCommand('deeplocal.checkConnection', async () => {
       output.show(true);
       logger.info(`Checking DeepLocal at ${getConfig().baseUrl}`);
       const ok = await client.checkConnection();
@@ -42,17 +42,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showWarningMessage('DeepLocal is not reachable. Check the base URL and server status.');
       }
     }),
-    vscode.commands.registerCommand('deeplocal-chat.openSettings', async () => {
-      await vscode.commands.executeCommand('workbench.action.openSettings', 'deeplocal-chat');
+    vscode.commands.registerCommand('deeplocal.openSettings', async () => {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'deeplocal');
     }),
-    vscode.commands.registerCommand('deeplocal-chat.openChat', () => {
-      void vscode.commands.executeCommand('workbench.view.extension.deeplocal-chat-sidebar');
-      void vscode.commands.executeCommand('deeplocal-chat.chatView.focus');
+    vscode.commands.registerCommand('deeplocal.open', () => {
+      void vscode.commands.executeCommand('workbench.view.extension.deeplocal-sidebar');
+      void vscode.commands.executeCommand('deeplocal.view.focus');
       void vscode.commands.executeCommand('workbench.action.moveViewToAuxiliaryBar');
     }),
   );
 
-  logger.info(`DeepLocal Chat Adapter activated, version ${context.extension.packageJSON.version}.`);
+  logger.info(`DeepLocal activated, version ${context.extension.packageJSON.version}.`);
 
   try {
     await provider.refreshModels();
