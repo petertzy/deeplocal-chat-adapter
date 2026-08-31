@@ -90,6 +90,13 @@
           "default": true,
           "description": "Add a compact coding-assistant system prompt before user messages."
         },
+        "deeplocal.agentMaxTurns": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum tool-use turns for one DeepLocal agent request."
+        },
         "deeplocal.logLevel": {
           "type": "string",
           "enum": [

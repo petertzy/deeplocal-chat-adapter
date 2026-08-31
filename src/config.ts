@@ -8,6 +8,7 @@ export interface DeepLocalConfig {
   maxOutputTokens: number;
   enableToolCalling: boolean;
   injectSystemPrompt: boolean;
+  agentMaxTurns: number;
   logLevel: 'debug' | 'info' | 'warning' | 'error' | 'off';
 }
 
@@ -22,6 +23,7 @@ export function getConfig(): DeepLocalConfig {
     maxOutputTokens: config.get<number>('maxOutputTokens', 16384),
     enableToolCalling: config.get<boolean>('enableToolCalling', true),
     injectSystemPrompt: config.get<boolean>('injectSystemPrompt', true),
+    agentMaxTurns: config.get<number>('agentMaxTurns', 8),
     logLevel: config.get<DeepLocalConfig['logLevel']>('logLevel', 'info'),
   };
 }

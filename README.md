@@ -80,6 +80,26 @@ Add input validation and keep the existing behavior.
 
 DeepLocal will receive the active file content and generate a complete replacement for that file. VS Code will ask for confirmation before applying the generated content.
 
+## Workspace Agent Tools
+
+When `Edit active file` is off, DeepLocal can use workspace tools during a conversation:
+
+- summarize the workspace
+- inspect the active file
+- read the current selection
+- read VS Code diagnostics
+- open files in the editor
+- list workspace files
+- read files
+- search text in the workspace
+- write files after confirmation
+- replace exact text after confirmation
+- run commands after confirmation
+
+This requires the selected DeepLocal model to support OpenAI-compatible tool calling. File writes and command execution always ask for confirmation before running.
+
+Use `Agent tools` for project-level coding tasks. Turn it off for plain chat.
+
 If the `code` command is not available, open VS Code and run:
 
 ```text

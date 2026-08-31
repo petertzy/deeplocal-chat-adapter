@@ -1,13 +1,15 @@
 import * as vscode from 'vscode';
+import { getAgentTools, invokeAgentTool, toolResultsToMessages } from './agent-tools';
 import { getConfig } from './config';
 import { DeepLocalClient } from './deeplocal-client';
 import { Logger } from './logger';
-import { ChatMessage } from './protocol';
+import { ChatMessage, ToolCall } from './protocol';
 
 interface WebviewMessage {
   type: 'ready' | 'send' | 'refreshModels' | 'clear';
   text?: string;
   model?: string;
+  useAgent?: boolean;
   editActiveFile?: boolean;
 }
 
@@ -60,7 +62,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       return;
     }
 
-    await this.sendPrompt(model, text, Boolean(message.editActiveFile));
+    await this.sendPrompt(model, text, Boolean(message.useAgent), Boolean(message.editActiveFile));
   }
 
   private async sendModels(): Promise<void> {
@@ -75,7 +77,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  private async sendPrompt(model: string, text: string, editActiveFile: boolean): Promise<void> {
+  private async sendPrompt(model: string, text: string, useAgent: boolean, editActiveFile: boolean): Promise<void> {
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.activeRequestId = requestId;
     const activeFile = editActiveFile ? getActiveTextFile() : undefined;
@@ -90,24 +92,24 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         role: 'system',
         content: activeFile
           ? 'You are a careful coding assistant. Return only the complete updated file in one fenced code block. Do not add explanations.'
-          : 'You are a concise assistant. Reply in the same language as the user unless asked otherwise.',
+          : [
+              'You are DeepLocal, a coding assistant inside VS Code.',
+              'Use tools when you need to inspect or modify workspace files.',
+              'Use get_active_file and get_selection before editing the active editor when relevant.',
+              'Use get_diagnostics after edits when the user asks you to fix errors.',
+              'Prefer small targeted edits. Explain what changed after tools finish.',
+              'Ask before destructive work; file write and command tools already require user confirmation.',
+            ].join('\n'),
       });
     }
 
     let answer = '';
     try {
-      for await (const event of this.client.streamChat(requestId, {
-        model,
-        messages,
-        stream: true,
-        max_tokens: getConfig().maxOutputTokens,
-      })) {
-        if (event.kind !== 'text') {
-          continue;
-        }
-        answer += event.value;
-        this.post({ type: 'assistantDelta', text: event.value });
-      }
+      answer = activeFile
+        ? await this.runSimpleEditRequest(requestId, model, messages)
+        : useAgent
+          ? await this.runAgentRequest(requestId, model, messages)
+          : await this.runSimpleEditRequest(requestId, model, messages);
 
       this.history.push({ role: 'assistant', content: answer });
       this.post({ type: 'assistantDone' });
@@ -120,6 +122,74 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     } finally {
       this.activeRequestId = undefined;
     }
+  }
+
+  private async runSimpleEditRequest(requestId: string, model: string, messages: ChatMessage[]): Promise<string> {
+    let answer = '';
+    for await (const event of this.client.streamChat(requestId, {
+      model,
+      messages,
+      stream: true,
+      max_tokens: getConfig().maxOutputTokens,
+    })) {
+      if (event.kind !== 'text') {
+        continue;
+      }
+      answer += event.value;
+      this.post({ type: 'assistantDelta', text: event.value });
+    }
+    return answer;
+  }
+
+  private async runAgentRequest(requestId: string, model: string, messages: ChatMessage[]): Promise<string> {
+    const workingMessages = [...messages];
+    let finalAnswer = '';
+
+    for (let turn = 0; turn < getConfig().agentMaxTurns; turn += 1) {
+      let answer = '';
+      const toolCalls: ToolCall[] = [];
+
+      for await (const event of this.client.streamChat(requestId, {
+        model,
+        messages: workingMessages,
+        stream: true,
+        max_tokens: getConfig().maxOutputTokens,
+        tools: getAgentTools(),
+        tool_choice: 'auto',
+      })) {
+        if (event.kind === 'text') {
+          answer += event.value;
+          this.post({ type: 'assistantDelta', text: event.value });
+        } else {
+          toolCalls.push(event.value);
+        }
+      }
+
+      if (!toolCalls.length) {
+        finalAnswer = answer;
+        break;
+      }
+
+      workingMessages.push({
+        role: 'assistant',
+        content: answer || null,
+        tool_calls: toolCalls,
+      });
+
+      for (const call of toolCalls) {
+        this.post({ type: 'notice', message: `Running ${call.function.name}...` });
+      }
+
+      const results = [];
+      for (const call of toolCalls) {
+        results.push(await invokeAgentTool(call.id, call.function.name, call.function.arguments));
+      }
+      workingMessages.push(...toolResultsToMessages(results));
+
+      this.post({ type: 'assistantStart' });
+    }
+
+    return finalAnswer || 'Done.';
   }
 
   private postError(message: string): void {
@@ -291,6 +361,11 @@ function renderHtml(webview: vscode.Webview): string {
       grid-template-columns: auto 1fr;
       gap: 6px;
     }
+    .options {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
     label.option {
       display: flex;
       align-items: center;
@@ -322,10 +397,16 @@ function renderHtml(webview: vscode.Webview): string {
         <button id="clear">Clear</button>
         <button id="send">Send</button>
       </div>
-      <label class="option">
-        <input id="editActiveFile" type="checkbox">
-        <span>Edit active file</span>
-      </label>
+      <div class="options">
+        <label class="option">
+          <input id="useAgent" type="checkbox" checked>
+          <span>Agent tools</span>
+        </label>
+        <label class="option">
+          <input id="editActiveFile" type="checkbox">
+          <span>Edit active file</span>
+        </label>
+      </div>
     </footer>
   </div>
   <script nonce="${nonce}">
@@ -336,6 +417,7 @@ function renderHtml(webview: vscode.Webview): string {
     const prompt = document.getElementById('prompt');
     const send = document.getElementById('send');
     const clear = document.getElementById('clear');
+    const useAgent = document.getElementById('useAgent');
     const editActiveFile = document.getElementById('editActiveFile');
     let currentAssistant;
 
@@ -395,6 +477,7 @@ function renderHtml(webview: vscode.Webview): string {
         type: 'send',
         text,
         model: model.value,
+        useAgent: useAgent.checked,
         editActiveFile: editActiveFile.checked,
       });
     });
