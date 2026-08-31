@@ -6,7 +6,7 @@ import { Logger } from './logger';
 import { ChatMessage, ToolCall } from './protocol';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'refreshModels' | 'newSession' | 'switchSession';
+  type: 'ready' | 'send' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession';
   text?: string;
   model?: string;
   sessionId?: string;
@@ -104,6 +104,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (message.type === 'deleteSession') {
+      await this.deleteSession(message.sessionId);
+      return;
+    }
+
     if (message.type !== 'send') {
       return;
     }
@@ -196,6 +201,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         session.transcript = session.transcript.filter((item) => item !== assistantItem);
       }
       await this.persist();
+      this.post({ type: 'assistantDone' });
     } finally {
       this.activeRequestId = undefined;
     }
@@ -311,17 +317,44 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       clearTimeout(this.persistTimer);
       this.persistTimer = undefined;
     }
-    this.sessions = this.sessions
-      .map(repairTranscript)
-      .map((session) => ({
-        ...session,
-        history: session.history.slice(-40),
-        transcript: session.transcript.slice(-80),
-      }))
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .slice(0, 20);
+    for (const session of this.sessions) {
+      repairTranscript(session);
+      session.history = session.history.slice(-40);
+      session.transcript = session.transcript.slice(-80);
+    }
+    this.sessions.sort((left, right) => right.updatedAt - left.updatedAt);
+    this.sessions = this.sessions.slice(0, 20);
     await this.context.globalState.update(ChatPanel.sessionsKey, this.sessions);
     await this.context.globalState.update(ChatPanel.activeSessionKey, this.activeSessionId);
+  }
+
+  private async deleteSession(sessionId: string | undefined): Promise<void> {
+    const target = this.sessions.find((session) => session.id === sessionId);
+    if (!target) {
+      return;
+    }
+
+    const choice = await vscode.window.showWarningMessage(
+      `Delete DeepLocal session "${target.title}"?`,
+      { modal: true },
+      'Delete',
+    );
+    if (choice !== 'Delete') {
+      return;
+    }
+
+    this.sessions = this.sessions.filter((session) => session.id !== target.id);
+    if (!this.sessions.length) {
+      this.sessions.push(createSession());
+    }
+
+    if (this.activeSessionId === target.id) {
+      this.activeSessionId = this.sessions[0].id;
+    }
+
+    await this.persist();
+    this.postSessions();
+    this.restoreTranscript();
   }
 
   private schedulePersist(): void {
@@ -584,7 +617,7 @@ function renderHtml(webview: vscode.Webview): string {
     }
     .session-row {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
       gap: 6px;
     }
     .actions {
@@ -622,6 +655,7 @@ function renderHtml(webview: vscode.Webview): string {
       <div class="session-row">
         <select id="session"></select>
         <button id="newSession">New</button>
+        <button id="deleteSession">Delete</button>
       </div>
       <textarea id="prompt" placeholder="Ask DeepLocal..."></textarea>
       <div class="controls">
@@ -653,6 +687,7 @@ function renderHtml(webview: vscode.Webview): string {
     const prompt = document.getElementById('prompt');
     const send = document.getElementById('send');
     const newSession = document.getElementById('newSession');
+    const deleteSession = document.getElementById('deleteSession');
     const restoreSession = document.getElementById('restoreSession');
     const useAgent = document.getElementById('useAgent');
     const editActiveFile = document.getElementById('editActiveFile');
@@ -743,6 +778,7 @@ function renderHtml(webview: vscode.Webview): string {
 
     refresh.addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
     newSession.addEventListener('click', () => vscode.postMessage({ type: 'newSession' }));
+    deleteSession.addEventListener('click', () => vscode.postMessage({ type: 'deleteSession', sessionId: session.value }));
     restoreSession.addEventListener('click', () => vscode.postMessage({ type: 'switchSession', sessionId: session.value }));
     session.addEventListener('change', () => vscode.postMessage({ type: 'switchSession', sessionId: session.value }));
     vscode.postMessage({ type: 'ready' });
