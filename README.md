@@ -100,6 +100,14 @@ This requires the selected DeepLocal model to support OpenAI-compatible tool cal
 
 Use `Agent tools` for project-level coding tasks. Turn it off for plain chat.
 
+## Sessions
+
+DeepLocal keeps recent conversation history in VS Code extension storage. Sessions are restored after reloading or restarting VS Code.
+
+Use the session selector in the DeepLocal view to switch back to previous conversations. `New` starts a new empty session without deleting older sessions.
+
+Run `DeepLocal: New Session` from the command palette to create a new session from anywhere.
+
 If the `code` command is not available, open VS Code and run:
 
 ```text

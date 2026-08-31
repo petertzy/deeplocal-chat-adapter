@@ -25,6 +25,7 @@
     "onCommand:deeplocal.checkConnection",
     "onCommand:deeplocal.openSettings",
     "onCommand:deeplocal.open",
+    "onCommand:deeplocal.newSession",
     "onView:deeplocal.view"
   ],
   "main": "./dist/extension.js",
@@ -127,6 +128,10 @@
       {
         "command": "deeplocal.open",
         "title": "DeepLocal: Open"
+      },
+      {
+        "command": "deeplocal.newSession",
+        "title": "DeepLocal: New Session"
       }
     ]
   },

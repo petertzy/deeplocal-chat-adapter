@@ -14,7 +14,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const client = new DeepLocalClient(logger);
 
   provider = new DeepLocalProvider(client, logger);
-  chatPanel = new ChatPanel(client, logger);
+  chatPanel = new ChatPanel(context, client, logger);
 
   context.subscriptions.push(
     output,
@@ -49,6 +49,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.commands.executeCommand('workbench.view.extension.deeplocal-sidebar');
       void vscode.commands.executeCommand('deeplocal.view.focus');
       void vscode.commands.executeCommand('workbench.action.moveViewToAuxiliaryBar');
+    }),
+    vscode.commands.registerCommand('deeplocal.newSession', async () => {
+      await chatPanel?.newSession();
+      void vscode.commands.executeCommand('workbench.view.extension.deeplocal-sidebar');
+      void vscode.commands.executeCommand('deeplocal.view.focus');
     }),
   );
 

@@ -6,22 +6,64 @@ import { Logger } from './logger';
 import { ChatMessage, ToolCall } from './protocol';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'refreshModels' | 'clear';
+  type: 'ready' | 'send' | 'refreshModels' | 'newSession' | 'switchSession';
   text?: string;
   model?: string;
+  sessionId?: string;
   useAgent?: boolean;
   editActiveFile?: boolean;
 }
 
+interface PersistedChatItem {
+  role: 'You' | 'DeepLocal';
+  text: string;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  updatedAt: number;
+  history: ChatMessage[];
+  transcript: PersistedChatItem[];
+}
+
 export class ChatPanel implements vscode.WebviewViewProvider {
-  private readonly history: ChatMessage[] = [];
+  private static readonly historyKey = 'deeplocal.chat.history';
+  private static readonly transcriptKey = 'deeplocal.chat.transcript';
+  private static readonly sessionsKey = 'deeplocal.sessions';
+  private static readonly activeSessionKey = 'deeplocal.activeSessionId';
+
+  private sessions: ChatSession[] = [];
+  private activeSessionId: string;
   private activeRequestId: string | undefined;
+  private persistTimer: ReturnType<typeof setTimeout> | undefined;
   private view: vscode.WebviewView | undefined;
 
   constructor(
+    private readonly context: vscode.ExtensionContext,
     private readonly client: DeepLocalClient,
     private readonly logger: Logger,
-  ) {}
+  ) {
+    this.sessions = this.loadSessions().map(repairTranscript);
+    this.activeSessionId = this.context.globalState.get<string>(ChatPanel.activeSessionKey, this.sessions[0].id);
+    if (!this.sessions.some((session) => session.id === this.activeSessionId)) {
+      this.activeSessionId = this.sessions[0].id;
+    }
+  }
+
+  async newSession(): Promise<void> {
+    if (this.activeRequestId) {
+      this.client.cancel(this.activeRequestId);
+      this.activeRequestId = undefined;
+    }
+
+    const session = createSession();
+    this.sessions.unshift(session);
+    this.activeSessionId = session.id;
+    await this.persist();
+    this.postSessions();
+    this.restoreTranscript();
+  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -44,11 +86,21 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   private async handleMessage(message: WebviewMessage): Promise<void> {
     if (message.type === 'ready' || message.type === 'refreshModels') {
       await this.sendModels();
+      this.postSessions();
+      this.restoreTranscript();
       return;
     }
 
-    if (message.type === 'clear') {
-      this.history.length = 0;
+    if (message.type === 'switchSession' && message.sessionId) {
+      this.activeSessionId = message.sessionId;
+      await this.context.globalState.update(ChatPanel.activeSessionKey, this.activeSessionId);
+      this.postSessions();
+      this.restoreTranscript();
+      return;
+    }
+
+    if (message.type === 'newSession') {
+      await this.newSession();
       return;
     }
 
@@ -82,11 +134,23 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     this.activeRequestId = requestId;
     const activeFile = editActiveFile ? getActiveTextFile() : undefined;
     const userMessage = activeFile ? buildEditPrompt(text, activeFile) : text;
-    this.history.push({ role: 'user', content: userMessage });
+    const session = this.activeSession();
+    session.history.push({ role: 'user', content: userMessage });
+    session.transcript.push({ role: 'You', text });
+    if (session.transcript.length === 1) {
+      session.title = makeTitle(text);
+    }
+    session.updatedAt = Date.now();
+    await this.persist();
+    this.postSessions();
+
+    const assistantItem: PersistedChatItem = { role: 'DeepLocal', text: '' };
+    session.transcript.push(assistantItem);
+    await this.persist();
 
     this.post({ type: 'assistantStart' });
 
-    const messages = [...this.history];
+    const messages = [...session.history];
     if (getConfig().injectSystemPrompt && messages[0]?.role !== 'system') {
       messages.unshift({
         role: 'system',
@@ -105,13 +169,22 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
     let answer = '';
     try {
+      const onDelta = (delta: string) => {
+        assistantItem.text += delta;
+        session.updatedAt = Date.now();
+        this.schedulePersist();
+      };
       answer = activeFile
-        ? await this.runSimpleEditRequest(requestId, model, messages)
+        ? await this.runSimpleEditRequest(requestId, model, messages, onDelta)
         : useAgent
-          ? await this.runAgentRequest(requestId, model, messages)
-          : await this.runSimpleEditRequest(requestId, model, messages);
+          ? await this.runAgentRequest(requestId, model, messages, onDelta)
+          : await this.runSimpleEditRequest(requestId, model, messages, onDelta);
 
-      this.history.push({ role: 'assistant', content: answer });
+      session.history.push({ role: 'assistant', content: answer });
+      assistantItem.text = answer;
+      session.updatedAt = Date.now();
+      await this.persist();
+      this.postSessions();
       this.post({ type: 'assistantDone' });
       if (activeFile) {
         await this.applyGeneratedFile(activeFile, answer);
@@ -119,12 +192,21 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     } catch (error) {
       this.logger.error(`DeepLocal chat failed: ${messageOf(error)}`);
       this.postError(`DeepLocal chat failed: ${messageOf(error)}`);
+      if (!assistantItem.text.trim()) {
+        session.transcript = session.transcript.filter((item) => item !== assistantItem);
+      }
+      await this.persist();
     } finally {
       this.activeRequestId = undefined;
     }
   }
 
-  private async runSimpleEditRequest(requestId: string, model: string, messages: ChatMessage[]): Promise<string> {
+  private async runSimpleEditRequest(
+    requestId: string,
+    model: string,
+    messages: ChatMessage[],
+    onDelta: (delta: string) => void,
+  ): Promise<string> {
     let answer = '';
     for await (const event of this.client.streamChat(requestId, {
       model,
@@ -136,12 +218,18 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         continue;
       }
       answer += event.value;
+      onDelta(event.value);
       this.post({ type: 'assistantDelta', text: event.value });
     }
     return answer;
   }
 
-  private async runAgentRequest(requestId: string, model: string, messages: ChatMessage[]): Promise<string> {
+  private async runAgentRequest(
+    requestId: string,
+    model: string,
+    messages: ChatMessage[],
+    onDelta: (delta: string) => void,
+  ): Promise<string> {
     const workingMessages = [...messages];
     let finalAnswer = '';
 
@@ -159,6 +247,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       })) {
         if (event.kind === 'text') {
           answer += event.value;
+          onDelta(event.value);
           this.post({ type: 'assistantDelta', text: event.value });
         } else {
           toolCalls.push(event.value);
@@ -198,6 +287,83 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
   private post(message: unknown): void {
     this.view?.webview.postMessage(message);
+  }
+
+  private restoreTranscript(): void {
+    const session = repairTranscript(this.activeSession());
+    this.post({ type: 'restore', items: session.transcript });
+  }
+
+  private postSessions(): void {
+    this.post({
+      type: 'sessions',
+      activeSessionId: this.activeSessionId,
+      sessions: this.sessions.map((session) => ({
+        id: session.id,
+        title: session.title,
+        updatedAt: session.updatedAt,
+      })),
+    });
+  }
+
+  private async persist(): Promise<void> {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    this.sessions = this.sessions
+      .map(repairTranscript)
+      .map((session) => ({
+        ...session,
+        history: session.history.slice(-40),
+        transcript: session.transcript.slice(-80),
+      }))
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 20);
+    await this.context.globalState.update(ChatPanel.sessionsKey, this.sessions);
+    await this.context.globalState.update(ChatPanel.activeSessionKey, this.activeSessionId);
+  }
+
+  private schedulePersist(): void {
+    if (this.persistTimer) {
+      return;
+    }
+
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      void this.persist();
+    }, 750);
+  }
+
+  private activeSession(): ChatSession {
+    let session = this.sessions.find((item) => item.id === this.activeSessionId);
+    if (!session) {
+      session = createSession();
+      this.sessions.unshift(session);
+      this.activeSessionId = session.id;
+    }
+    return session;
+  }
+
+  private loadSessions(): ChatSession[] {
+    const sessions = this.context.globalState.get<ChatSession[]>(ChatPanel.sessionsKey, []);
+    if (sessions.length) {
+      return sessions;
+    }
+
+    const oldHistory = this.context.globalState.get<ChatMessage[]>(ChatPanel.historyKey, []);
+    const oldTranscript = this.context.globalState.get<PersistedChatItem[]>(ChatPanel.transcriptKey, []);
+    if (oldHistory.length || oldTranscript.length) {
+      return [{
+        id: createId(),
+        title: oldTranscript[0]?.text ? makeTitle(oldTranscript[0].text) : 'Previous session',
+        updatedAt: Date.now(),
+        history: oldHistory,
+        transcript: oldTranscript,
+      }];
+    }
+
+    return [createSession()];
   }
 
   private async applyGeneratedFile(activeFile: ActiveTextFile, answer: string): Promise<void> {
@@ -279,6 +445,66 @@ function extractUpdatedFile(answer: string): string | undefined {
   return content.trim().length > 0 ? content : undefined;
 }
 
+function createSession(): ChatSession {
+  return {
+    id: createId(),
+    title: 'New session',
+    updatedAt: Date.now(),
+    history: [],
+    transcript: [],
+  };
+}
+
+function createId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function makeTitle(text: string): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  return compact.length > 42 ? `${compact.slice(0, 39)}...` : compact || 'New session';
+}
+
+function repairTranscript(session: ChatSession): ChatSession {
+  const assistantTranscriptCount = session.transcript.filter((item) => item.role === 'DeepLocal').length;
+  const assistantHistory = session.history
+    .filter((message) => message.role === 'assistant' && typeof message.content === 'string' && message.content.trim())
+    .map((message) => message.content as string);
+
+  if (assistantTranscriptCount >= assistantHistory.length) {
+    return session;
+  }
+
+  const rebuilt: PersistedChatItem[] = [];
+  let visibleUserIndex = 0;
+  let visibleAssistantIndex = 0;
+  const visibleUsers = session.transcript.filter((item) => item.role === 'You');
+
+  for (const message of session.history) {
+    if (message.role === 'user') {
+      const visible = visibleUsers[visibleUserIndex];
+      visibleUserIndex += 1;
+      rebuilt.push(visible ?? { role: 'You', text: summarizeUserMessage(message.content) });
+    }
+
+    if (message.role === 'assistant' && typeof message.content === 'string' && message.content.trim()) {
+      rebuilt.push({ role: 'DeepLocal', text: assistantHistory[visibleAssistantIndex] });
+      visibleAssistantIndex += 1;
+    }
+  }
+
+  session.transcript = rebuilt.length ? rebuilt : session.transcript;
+  return session;
+}
+
+function summarizeUserMessage(content: string | null | undefined): string {
+  if (!content) {
+    return '';
+  }
+
+  const firstLine = content.split(/\r?\n/).find((line) => line.trim());
+  return firstLine?.trim() ?? '';
+}
+
 function renderHtml(webview: vscode.Webview): string {
   const nonce = Math.random().toString(36).slice(2);
 
@@ -356,6 +582,11 @@ function renderHtml(webview: vscode.Webview): string {
       grid-template-columns: 1fr auto;
       gap: 6px;
     }
+    .session-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px;
+    }
     .actions {
       display: grid;
       grid-template-columns: auto 1fr;
@@ -388,13 +619,17 @@ function renderHtml(webview: vscode.Webview): string {
   <div class="shell">
     <main id="messages"></main>
     <footer>
+      <div class="session-row">
+        <select id="session"></select>
+        <button id="newSession">New</button>
+      </div>
       <textarea id="prompt" placeholder="Ask DeepLocal..."></textarea>
       <div class="controls">
         <select id="model"></select>
         <button id="refresh">Refresh</button>
       </div>
       <div class="actions">
-        <button id="clear">Clear</button>
+        <button id="restoreSession">Reload</button>
         <button id="send">Send</button>
       </div>
       <div class="options">
@@ -403,7 +638,7 @@ function renderHtml(webview: vscode.Webview): string {
           <span>Agent tools</span>
         </label>
         <label class="option">
-          <input id="editActiveFile" type="checkbox">
+          <input id="editActiveFile" type="checkbox" checked>
           <span>Edit active file</span>
         </label>
       </div>
@@ -412,11 +647,13 @@ function renderHtml(webview: vscode.Webview): string {
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const model = document.getElementById('model');
+    const session = document.getElementById('session');
     const refresh = document.getElementById('refresh');
     const messages = document.getElementById('messages');
     const prompt = document.getElementById('prompt');
     const send = document.getElementById('send');
-    const clear = document.getElementById('clear');
+    const newSession = document.getElementById('newSession');
+    const restoreSession = document.getElementById('restoreSession');
     const useAgent = document.getElementById('useAgent');
     const editActiveFile = document.getElementById('editActiveFile');
     let currentAssistant;
@@ -444,6 +681,21 @@ function renderHtml(webview: vscode.Webview): string {
           option.textContent = id;
           return option;
         }));
+      }
+      if (msg.type === 'sessions') {
+        session.replaceChildren(...msg.sessions.map((item) => {
+          const option = document.createElement('option');
+          option.value = item.id;
+          option.textContent = item.title;
+          option.selected = item.id === msg.activeSessionId;
+          return option;
+        }));
+      }
+      if (msg.type === 'restore') {
+        messages.replaceChildren();
+        for (const item of msg.items) {
+          addMessage(item.role, item.text);
+        }
       }
       if (msg.type === 'assistantStart') {
         currentAssistant = addMessage('DeepLocal', '');
@@ -490,10 +742,9 @@ function renderHtml(webview: vscode.Webview): string {
     });
 
     refresh.addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
-    clear.addEventListener('click', () => {
-      messages.replaceChildren();
-      vscode.postMessage({ type: 'clear' });
-    });
+    newSession.addEventListener('click', () => vscode.postMessage({ type: 'newSession' }));
+    restoreSession.addEventListener('click', () => vscode.postMessage({ type: 'switchSession', sessionId: session.value }));
+    session.addEventListener('change', () => vscode.postMessage({ type: 'switchSession', sessionId: session.value }));
     vscode.postMessage({ type: 'ready' });
   </script>
 </body>
