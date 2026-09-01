@@ -25,34 +25,38 @@ Repository: https://github.com/petertzy/deeplocal-chat-adapter
    http://127.0.0.1:14567/v1
    ```
 
-3. Install dependencies:
+3. Run the quick install script from this repository:
 
    ```bash
-   npm install
+   npm run install:local
    ```
 
-4. Build the extension:
+   This installs dependencies, builds a VSIX package, and installs the extension into VS Code.
+
+   You can also run the script directly:
 
    ```bash
-   npm run compile
+   ./scripts/install-local.sh
    ```
 
-5. Open the repository in VS Code.
-
-6. Press `F5` to launch an Extension Development Host.
-
-7. In the Extension Development Host, open the Command Palette:
+4. Open VS Code's Command Palette:
 
    - macOS: `Command+Shift+P`
    - Windows/Linux: `Ctrl+Shift+P`
 
-8. Run:
+5. Run:
+
+   ```text
+   Developer: Reload Window
+   ```
+
+6. Open the Command Palette again and run:
 
    ```text
    deeplocal-chat-adapter: Open
    ```
 
-9. Choose a DeepLocal model from the VS Code chat model picker.
+7. Choose a DeepLocal model from the VS Code chat model picker.
 
 ## Opening The Right Sidebar
 
@@ -65,26 +69,6 @@ View: Toggle Secondary Side Bar Visibility
 ```
 
 After installing the extension, reload VS Code first:
-
-```text
-Developer: Reload Window
-```
-
-## Quick Local Install
-
-Use the local install script when you want to test the extension in your normal VS Code window instead of the Extension Development Host:
-
-```bash
-npm run install:local
-```
-
-You can also run the script directly:
-
-```bash
-./scripts/install-local.sh
-```
-
-The script installs dependencies, builds a VSIX package, and installs `local-dev.deeplocal-chat-adapter` into VS Code. After it finishes, reload VS Code from the Command Palette with:
 
 ```text
 Developer: Reload Window

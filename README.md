@@ -20,19 +20,6 @@ Before using the extension, start the separate local DeepLocal service and keep 
 https://github.com/petertzy/deepLocal
 ```
 
-That service should expose an OpenAI-compatible API at:
-
-```text
-http://127.0.0.1:14567/v1
-```
-
-The extension uses:
-
-- `GET /v1/models`
-- `POST /v1/chat/completions`
-
-Streaming responses should use server-sent events with `data: {...}` lines and a final `data: [DONE]` marker.
-
 ## Quick Start
 
 1. Clone this repository and open it locally:
@@ -42,35 +29,38 @@ Streaming responses should use server-sent events with `data: {...}` lines and a
    cd deeplocal-chat-adapter
    ```
 
-2. Start the separate local DeepLocal service and keep it running:
-
-   ```text
-   https://github.com/petertzy/deepLocal
-   ```
-
-3. Install dependencies and build this extension:
+2. Run the quick install script from this repository:
 
    ```bash
-   npm install
-   npm run compile
+   npm run install:local
    ```
 
-4. Open this folder in VS Code.
+   This installs dependencies, builds a VSIX package, and installs the extension into VS Code.
 
-5. Press `F5` to launch an Extension Development Host.
+   You can also run the script directly:
 
-6. In the Extension Development Host, open the Command Palette:
+   ```bash
+   ./scripts/install-local.sh
+   ```
+
+3. Open VS Code's Command Palette:
 
    - macOS: `Command+Shift+P`
    - Windows/Linux: `Ctrl+Shift+P`
 
-7. Run:
+4. Run:
+
+   ```text
+   Developer: Reload Window
+   ```
+
+5. Open the Command Palette again and run:
 
    ```text
    deeplocal-chat-adapter: Open
    ```
 
-8. Select a DeepLocal model in the VS Code chat model picker.
+6. Select a DeepLocal model in the VS Code chat model picker.
 
 ## Open The Right Sidebar
 
@@ -85,37 +75,7 @@ Streaming responses should use server-sent events with `data: {...}` lines and a
    deeplocal-chat-adapter: Open
    ```
 
-The chat view opens in VS Code's Secondary Side Bar, which is the right sidebar. If the right sidebar is hidden, open the Command Palette and run:
-
-```text
-View: Toggle Secondary Side Bar Visibility
-```
-
-After installing the extension, reload VS Code first:
-
-```text
-Developer: Reload Window
-```
-
-## Local Install
-
-Use this when you want to test the extension in your normal VS Code window instead of the Extension Development Host.
-
-1. Start the local DeepLocal service and keep it running.
-
-2. Install this extension into VS Code with the quick local install script:
-
-   ```bash
-   npm run install:local
-   ```
-
-   You can also run the script directly:
-
-   ```bash
-   ./scripts/install-local.sh
-   ```
-
-The script installs dependencies, builds a VSIX package, and installs it into VS Code with the `code` command. If `code` is not available, run this command in VS Code first:
+The chat view opens in VS Code's Secondary Side Bar, which is the right sidebar. If the right sidebar is hidden:
 
 1. Open the Command Palette:
 
@@ -125,56 +85,10 @@ The script installs dependencies, builds a VSIX package, and installs it into VS
 2. Run:
 
    ```text
-   Shell Command: Install 'code' command in PATH
+   View: Toggle Secondary Side Bar Visibility
    ```
 
-Reload VS Code after installation:
-
-1. Open the Command Palette:
-
-   - macOS: `Command+Shift+P`
-   - Windows/Linux: `Ctrl+Shift+P`
-
-2. Run:
-
-   ```text
-   Developer: Reload Window
-   ```
-
-3. Open the Command Palette again and run:
-
-   ```text
-   deeplocal-chat-adapter: Open
-   ```
-
-## Development
-
-Useful commands:
-
-```bash
-npm run compile
-npm run watch
-npm run package
-npm run package:vsix
-```
-
-Before opening a pull request, please run:
-
-```bash
-npm run compile
-```
-
-## Settings
-
-- `deeplocal.baseUrl`: DeepLocal API base URL
-- `deeplocal.apiKey`: optional Bearer token
-- `deeplocal.requestTimeout`: request timeout in milliseconds
-- `deeplocal.maxInputTokens`: advertised maximum input tokens
-- `deeplocal.maxOutputTokens`: advertised maximum output tokens
-- `deeplocal.enableToolCalling`: expose editor tools to compatible models
-- `deeplocal.injectSystemPrompt`: prepend a compact assistant instruction
-- `deeplocal.agentMaxTurns`: maximum tool-use turns for one agent request
-- `deeplocal.logLevel`: extension output logging level
+3. If the `deeplocal-chat-adapter` view is still on the left side, drag it from the left sidebar to the right sidebar.
 
 ## Contributing
 
