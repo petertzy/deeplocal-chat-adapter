@@ -1,119 +1,171 @@
-# DeepLocal
+# deeplocal-chat-adapter
 
-<img width="1437" height="679" alt="Image" src="https://github.com/user-attachments/assets/a78f4d73-7ed5-4ebe-947d-c2981cacf1d3" />
+`deeplocal-chat-adapter` is a VS Code extension that connects local OpenAI-compatible DeepLocal models to the VS Code chat model picker and a built-in sidebar chat view.
 
-DeepLocal is a small VS Code extension that exposes local DeepLocal models inside VS Code.
+Repository: https://github.com/petertzy/deeplocal-chat-adapter
 
-The default API endpoint is:
+<img width="1437" height="679" alt="DeepLocal VS Code extension" src="https://github.com/user-attachments/assets/a78f4d73-7ed5-4ebe-947d-c2981cacf1d3" />
+
+## Features
+
+- Use DeepLocal models from VS Code.
+- Chat in the DeepLocal Secondary Side Bar view.
+- Edit the active file with confirmation before changes are applied.
+- Let capable models inspect files, search the workspace, read diagnostics, and propose confirmed edits.
+- Restore recent chat sessions after reloading VS Code.
+
+## Requirements
+
+Before using the extension, start the separate local DeepLocal service and keep it running:
+
+```text
+https://github.com/petertzy/deepLocal
+```
+
+That service should expose an OpenAI-compatible API at:
 
 ```text
 http://127.0.0.1:14567/v1
 ```
 
-## Expected DeepLocal API
-
-DeepLocal should provide an OpenAI-compatible surface:
+The extension uses:
 
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
-Streaming chat responses should be sent as server-sent events using `data: {...}` lines and a final `data: [DONE]` marker.
+Streaming responses should use server-sent events with `data: {...}` lines and a final `data: [DONE]` marker.
 
-## Development
+## Quick Start
 
-```bash
-npm install
-npm run compile
-```
+1. Clone this repository and open it locally:
 
-Open this folder in VS Code and press `F5` to launch an Extension Development Host. After DeepLocal is running, select a DeepLocal model in the chat model picker.
+   ```bash
+   git clone https://github.com/petertzy/deeplocal-chat-adapter.git
+   cd deeplocal-chat-adapter
+   ```
 
-Use the DeepLocal view in the Secondary Side Bar to open the built-in chat view. You can also focus it from the command palette:
+2. Start the separate local DeepLocal service and keep it running:
+
+   ```text
+   https://github.com/petertzy/deepLocal
+   ```
+
+3. Install dependencies and build this extension:
+
+   ```bash
+   npm install
+   npm run compile
+   ```
+
+4. Open this folder in VS Code.
+
+5. Press `F5` to launch an Extension Development Host.
+
+6. In the Extension Development Host, open the Command Palette:
+
+   - macOS: `Command+Shift+P`
+   - Windows/Linux: `Ctrl+Shift+P`
+
+7. Run:
+
+   ```text
+   deeplocal-chat-adapter: Open
+   ```
+
+8. Select a DeepLocal model in the VS Code chat model picker.
+
+## Open The Right Sidebar
+
+1. Open the Command Palette:
+
+   - macOS: `Command+Shift+P`
+   - Windows/Linux: `Ctrl+Shift+P`
+
+2. Run:
+
+   ```text
+   deeplocal-chat-adapter: Open
+   ```
+
+The chat view opens in VS Code's Secondary Side Bar, which is the right sidebar. If the right sidebar is hidden, open the Command Palette and run:
 
 ```text
-DeepLocal: Open
+View: Toggle Secondary Side Bar Visibility
 ```
 
-## Install Locally In VS Code
-
-Use this when you want to test the extension from VS Code's normal Extensions environment instead of the Extension Development Host.
-
-```bash
-npm run install:local
-```
-
-Or run the script directly:
-
-```bash
-./scripts/install-local.sh
-```
-
-The script will install dependencies, build a VSIX package, and install it into VS Code with:
-
-```bash
-code --install-extension deeplocal-0.1.0.vsix --force
-```
-
-After installation, reload VS Code:
+If the extension was just installed or renamed, reload VS Code first:
 
 ```text
 Developer: Reload Window
 ```
 
-Then open DeepLocal from the Extensions/Activity Bar entry, or run this command from the command palette:
+## Local Install
 
-```text
-DeepLocal: Open
+Use this when you want to test the extension in your normal VS Code window instead of the Extension Development Host.
+
+1. Start the local DeepLocal service and keep it running.
+
+2. Install this extension into VS Code with the quick local install script:
+
+   ```bash
+   npm run install:local
+   ```
+
+   You can also run the script directly:
+
+   ```bash
+   ./scripts/install-local.sh
+   ```
+
+The script installs dependencies, builds a VSIX package, and installs it into VS Code with the `code` command. If `code` is not available, run this command in VS Code first:
+
+If you previously installed the old `local-dev.deeplocal` extension, the script removes it before installing `local-dev.deeplocal-chat-adapter`.
+
+1. Open the Command Palette:
+
+   - macOS: `Command+Shift+P`
+   - Windows/Linux: `Ctrl+Shift+P`
+
+2. Run:
+
+   ```text
+   Shell Command: Install 'code' command in PATH
+   ```
+
+Reload VS Code after installation:
+
+1. Open the Command Palette:
+
+   - macOS: `Command+Shift+P`
+   - Windows/Linux: `Ctrl+Shift+P`
+
+2. Run:
+
+   ```text
+   Developer: Reload Window
+   ```
+
+3. Open the Command Palette again and run:
+
+   ```text
+   deeplocal-chat-adapter: Open
+   ```
+
+## Development
+
+Useful commands:
+
+```bash
+npm run compile
+npm run watch
+npm run package
+npm run package:vsix
 ```
 
-## Editing The Active File
+Before opening a pull request, please run:
 
-Open a source file in the editor, then open DeepLocal and enable:
-
-```text
-Edit active file
-```
-
-Ask for a change such as:
-
-```text
-Add input validation and keep the existing behavior.
-```
-
-DeepLocal will receive the active file content and generate a complete replacement for that file. VS Code will ask for confirmation before applying the generated content.
-
-## Workspace Agent Tools
-
-When `Edit active file` is off, DeepLocal can use workspace tools during a conversation:
-
-- summarize the workspace
-- inspect the active file
-- read the current selection
-- read VS Code diagnostics
-- open files in the editor
-- list workspace files
-- read files
-- search text in the workspace
-- write files after confirmation
-- replace exact text after confirmation
-- run commands after confirmation
-
-This requires the selected DeepLocal model to support OpenAI-compatible tool calling. File writes and command execution always ask for confirmation before running.
-
-Use `Agent tools` for project-level coding tasks. Turn it off for plain chat.
-
-## Sessions
-
-DeepLocal keeps recent conversation history in VS Code extension storage. Sessions are restored after reloading or restarting VS Code.
-
-Use the session selector in the DeepLocal view to switch back to previous conversations. `New` starts a new empty session without deleting older sessions.
-
-Run `DeepLocal: New Session` from the command palette to create a new session from anywhere.
-
-If the `code` command is not available, open VS Code and run:
-
-```text
-Shell Command: Install 'code' command in PATH
+```bash
+npm run compile
 ```
 
 ## Settings
@@ -121,5 +173,17 @@ Shell Command: Install 'code' command in PATH
 - `deeplocal.baseUrl`: DeepLocal API base URL
 - `deeplocal.apiKey`: optional Bearer token
 - `deeplocal.requestTimeout`: request timeout in milliseconds
-- `deeplocal.enableToolCalling`: forward editor tools to DeepLocal
+- `deeplocal.maxInputTokens`: advertised maximum input tokens
+- `deeplocal.maxOutputTokens`: advertised maximum output tokens
+- `deeplocal.enableToolCalling`: expose editor tools to compatible models
 - `deeplocal.injectSystemPrompt`: prepend a compact assistant instruction
+- `deeplocal.agentMaxTurns`: maximum tool-use turns for one agent request
+- `deeplocal.logLevel`: extension output logging level
+
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and pull request guidance.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

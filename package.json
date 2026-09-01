@@ -1,12 +1,16 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "deeplocal",
-  "displayName": "DeepLocal",
+  "name": "deeplocal-chat-adapter",
+  "displayName": "deeplocal-chat-adapter",
   "description": "Connect DeepLocal OpenAI-compatible models to VS Code.",
   "version": "0.1.0",
   "publisher": "local-dev",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/petertzy/deeplocal-chat-adapter.git"
+  },
   "engines": {
     "vscode": "^1.104.0"
   },
@@ -21,35 +25,35 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:deeplocal.refreshModels",
-    "onCommand:deeplocal.checkConnection",
-    "onCommand:deeplocal.openSettings",
-    "onCommand:deeplocal.open",
-    "onCommand:deeplocal.newSession",
-    "onView:deeplocal.view"
+    "onCommand:deeplocal-chat-adapter.refreshModels",
+    "onCommand:deeplocal-chat-adapter.checkConnection",
+    "onCommand:deeplocal-chat-adapter.openSettings",
+    "onCommand:deeplocal-chat-adapter.open",
+    "onCommand:deeplocal-chat-adapter.newSession",
+    "onView:deeplocal-chat-adapter.view"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "secondarySideBar": [
         {
-          "id": "deeplocal-sidebar",
-          "title": "DeepLocal",
+          "id": "deeplocal-chat-adapter-sidebar",
+          "title": "deeplocal-chat-adapter",
           "icon": "resources/deeplocal.svg"
         }
       ]
     },
     "views": {
-      "deeplocal-sidebar": [
+      "deeplocal-chat-adapter-sidebar": [
         {
-          "id": "deeplocal.view",
-          "name": "DeepLocal",
+          "id": "deeplocal-chat-adapter.view",
+          "name": "deeplocal-chat-adapter",
           "type": "webview"
         }
       ]
     },
     "configuration": {
-      "title": "DeepLocal",
+      "title": "deeplocal-chat-adapter",
       "properties": {
         "deeplocal.baseUrl": {
           "type": "string",
@@ -114,24 +118,24 @@
     },
     "commands": [
       {
-        "command": "deeplocal.refreshModels",
-        "title": "DeepLocal: Refresh Models"
+        "command": "deeplocal-chat-adapter.refreshModels",
+        "title": "deeplocal-chat-adapter: Refresh Models"
       },
       {
-        "command": "deeplocal.checkConnection",
-        "title": "DeepLocal: Check Connection"
+        "command": "deeplocal-chat-adapter.checkConnection",
+        "title": "deeplocal-chat-adapter: Check Connection"
       },
       {
-        "command": "deeplocal.openSettings",
-        "title": "DeepLocal: Open Settings"
+        "command": "deeplocal-chat-adapter.openSettings",
+        "title": "deeplocal-chat-adapter: Open Settings"
       },
       {
-        "command": "deeplocal.open",
-        "title": "DeepLocal: Open"
+        "command": "deeplocal-chat-adapter.open",
+        "title": "deeplocal-chat-adapter: Open"
       },
       {
-        "command": "deeplocal.newSession",
-        "title": "DeepLocal: New Session"
+        "command": "deeplocal-chat-adapter.newSession",
+        "title": "deeplocal-chat-adapter: New Session"
       }
     ]
   },
