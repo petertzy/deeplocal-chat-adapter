@@ -1,6 +1,6 @@
 # DeepLocal
 
-<img width="1437" height="679" alt="Image" src="https://github.com/user-attachments/assets/a78f4d73-7ed5-4ebe-947d-c2981cacf1d3" />
+<img width="1430" height="683" alt="Image" src="https://github.com/user-attachments/assets/ecb5554a-578b-4ff5-ba57-fa93b4edc0e6" />
 
 DeepLocal is a small VS Code extension that exposes local DeepLocal models inside VS Code.
 
