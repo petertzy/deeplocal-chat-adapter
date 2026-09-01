@@ -64,7 +64,7 @@ If the right sidebar is hidden, run this command from the Command Palette:
 View: Toggle Secondary Side Bar Visibility
 ```
 
-If the extension was just installed or renamed, reload VS Code first:
+After installing the extension, reload VS Code first:
 
 ```text
 Developer: Reload Window
@@ -84,7 +84,7 @@ You can also run the script directly:
 ./scripts/install-local.sh
 ```
 
-The script installs dependencies, builds a VSIX package, removes the old `local-dev.deeplocal` extension if it is installed, and installs `local-dev.deeplocal-chat-adapter` into VS Code. After it finishes, reload VS Code from the Command Palette with:
+The script installs dependencies, builds a VSIX package, and installs `local-dev.deeplocal-chat-adapter` into VS Code. After it finishes, reload VS Code from the Command Palette with:
 
 ```text
 Developer: Reload Window

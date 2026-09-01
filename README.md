@@ -91,7 +91,7 @@ The chat view opens in VS Code's Secondary Side Bar, which is the right sidebar.
 View: Toggle Secondary Side Bar Visibility
 ```
 
-If the extension was just installed or renamed, reload VS Code first:
+After installing the extension, reload VS Code first:
 
 ```text
 Developer: Reload Window
@@ -116,8 +116,6 @@ Use this when you want to test the extension in your normal VS Code window inste
    ```
 
 The script installs dependencies, builds a VSIX package, and installs it into VS Code with the `code` command. If `code` is not available, run this command in VS Code first:
-
-If you previously installed the old `local-dev.deeplocal` extension, the script removes it before installing `local-dev.deeplocal-chat-adapter`.
 
 1. Open the Command Palette:
 
