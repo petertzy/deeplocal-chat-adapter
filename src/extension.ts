@@ -17,14 +17,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   client.setRemoteApiKey(await context.secrets.get(secretKey) ?? '');
 
   provider = new DeepLocalProvider(client, logger);
-  chatPanel = new ChatPanel(context, client, logger, async (key) => {
-    if (key !== undefined) {
+  chatPanel = new ChatPanel(context, client, logger, {
+    get: () => context.secrets.get(secretKey),
+    set: async (key) => {
       await context.secrets.store(secretKey, key);
       client.setRemoteApiKey(key);
-      return;
-    }
-    await context.secrets.delete(secretKey);
-    client.setRemoteApiKey('');
+    },
+    clear: async () => {
+      await context.secrets.delete(secretKey);
+      client.setRemoteApiKey('');
+    },
   });
 
   context.subscriptions.push(

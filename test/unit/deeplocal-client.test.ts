@@ -63,6 +63,27 @@ describe('DeepLocalClient', () => {
     expect(server.requests[0]?.authorization).toBe('Bearer secret-storage-key');
   });
 
+  it('retains a key after checking whether one is configured', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ data: [{ id: 'remote-model' }] }));
+    });
+    const remoteConfig = { ...config(server.baseUrl), backend: 'remote' as const };
+    const secrets = new Map<string, string>();
+    const client = new DeepLocalClient(logger, () => remoteConfig);
+    client.setRemoteApiKeyProvider(async () => secrets.get('remote-key'));
+    const keyControl = {
+      get: async () => secrets.get('remote-key'),
+      set: async (key: string) => { secrets.set('remote-key', key); },
+      clear: async () => { secrets.delete('remote-key'); },
+    };
+    await keyControl.set('stored-key');
+    expect(await keyControl.get()).toBe('stored-key');
+    await expect(client.listModels()).resolves.toEqual([{ id: 'remote-model' }]);
+    expect(server.requests[0]?.authorization).toBe('Bearer stored-key');
+    expect(await keyControl.get()).toBe('stored-key');
+  });
+
   it('ignores malformed model payloads and returns an empty model list', async () => {
     server = await startFakeServer((_req, res) => { res.end('{"data":"not-an-array"}'); });
     const client = new DeepLocalClient(logger, () => config(server!.baseUrl));

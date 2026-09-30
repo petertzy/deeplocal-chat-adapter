@@ -43,7 +43,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     private readonly context: vscode.ExtensionContext,
     private readonly client: DeepLocalClient,
     private readonly logger: Logger,
-    private readonly remoteApiKey: (key?: string) => Promise<string | void>,
+    private readonly remoteApiKey: {
+      get: () => PromiseLike<string | undefined>;
+      set: (key: string) => Promise<void>;
+      clear: () => Promise<void>;
+    },
   ) {
     this.sessions = this.loadSessions().map(repairTranscript);
     this.activeSessionId = this.context.globalState.get<string>(ChatPanel.activeSessionKey, this.sessions[0].id);
@@ -109,14 +113,14 @@ export class ChatPanel implements vscode.WebviewViewProvider {
           this.post({ type: 'error', message: 'API key cannot be empty.' });
           return;
         }
-        await this.remoteApiKey(normalizedKey);
+        await this.remoteApiKey.set(normalizedKey);
         await this.sendModels();
         this.post({ type: 'notice', message: 'Remote API key stored securely.' });
       }
       return;
     }
     if (message.type === 'clearRemoteApiKey') {
-      await this.remoteApiKey();
+      await this.remoteApiKey.clear();
       this.post({ type: 'notice', message: 'Remote API key cleared.' });
       return;
     }
@@ -165,7 +169,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         type: 'models',
         models: models.map((model) => model.id),
         backend: getConfig().backend,
-        hasApiKey: getConfig().backend === 'remote' ? await this.remoteApiKey() !== '' : false,
+        hasApiKey: getConfig().backend === 'remote' ? Boolean(await this.remoteApiKey.get()) : false,
         baseUrl: getConfig().baseUrl,
       });
     } catch (error) {
