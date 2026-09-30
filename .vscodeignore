@@ -10,3 +10,7 @@ esbuild.js
 tsconfig.json
 **/*.map
 **/*.ts
+test/**
+vitest.config.ts
+.vscode-test.mjs
+.eslintrc.json

@@ -29,13 +29,13 @@ https://github.com/petertzy/deepLocal
    cd deeplocal-chat-adapter
    ```
 
-2. Run the quick install script from this repository:
+2. For the final packaged-extension install, run:
 
    ```bash
    npm run install:local
    ```
 
-   This installs dependencies, builds a VSIX package, and installs the extension into VS Code.
+   This installs dependencies, builds a VSIX package, and installs it into your normal VS Code installation. For development, use the faster workflow in [Contributing](CONTRIBUTING.md).
 
    You can also run the script directly:
 

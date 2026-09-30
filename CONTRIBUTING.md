@@ -13,7 +13,7 @@ Repository: https://github.com/petertzy/deeplocal-chat-adapter
    cd deeplocal-chat-adapter
    ```
 
-2. Start the separate local DeepLocal service and keep it running:
+2. For manual feature testing, start the separate local DeepLocal service:
 
    ```text
    https://github.com/petertzy/deepLocal
@@ -25,13 +25,13 @@ Repository: https://github.com/petertzy/deeplocal-chat-adapter
    http://127.0.0.1:14567/v1
    ```
 
-3. Run the quick install script from this repository:
+3. Install dependencies:
 
    ```bash
-   npm run install:local
+   npm install
    ```
 
-   This installs dependencies, builds a VSIX package, and installs the extension into VS Code.
+   Unit and integration tests use a local fake server and do not need DeepLocal installed.
 
    You can also run the script directly:
 
@@ -39,24 +39,19 @@ Repository: https://github.com/petertzy/deeplocal-chat-adapter
    ./scripts/install-local.sh
    ```
 
-4. Open VS Code's Command Palette:
+## Development And Testing
 
-   - macOS: `Command+Shift+P`
-   - Windows/Linux: `Ctrl+Shift+P`
+Run `npm run watch` in one terminal for continuous bundle and type checking. Run `npm run test:watch` in another for continuous unit tests.
 
-5. Run:
+- `npm test` runs fast unit tests in Node, without VS Code or a DeepLocal service.
+- `npm run check` runs type checking, lint, and unit tests.
+- `npm run test:integration` compiles the extension and launches an isolated VS Code Extension Host against a local fake OpenAI-compatible server.
 
-   ```text
-   Developer: Reload Window
-   ```
+For interactive manual testing, select **Run deeplocal-chat-adapter (Extension Development Host)** in VS Code's **Run and Debug** panel and choose **Start Debugging**. The same configuration is available with **Command Palette → Debug: Start Debugging**. It compiles the current source and loads it directly into a separate Extension Development Host; it does not install a VSIX.
 
-6. Open the Command Palette again and run:
+Before release, `npm run package` builds production output, `npm run package:vsix` creates the distributable, and `npm run install:local` installs that VSIX in the normal VS Code installation for final packaged-extension validation.
 
-   ```text
-   deeplocal-chat-adapter: Open
-   ```
-
-7. Choose a DeepLocal model from the VS Code chat model picker.
+After launching the development host, start DeepLocal if you want to test live model interactions and run `deeplocal-chat-adapter: Open` from its Command Palette.
 
 ## Opening The Right Sidebar
 
@@ -66,12 +61,6 @@ If the right sidebar is hidden, run this command from the Command Palette:
 
 ```text
 View: Toggle Secondary Side Bar Visibility
-```
-
-After installing the extension, reload VS Code first:
-
-```text
-Developer: Reload Window
 ```
 
 ## Useful VS Code Commands
@@ -90,16 +79,18 @@ Common commands while developing:
 
 ## Before You Open A Pull Request
 
-Please run:
+Please run the fast validation and Extension Host tests:
 
 ```bash
-npm run compile
+npm run check
+npm run test:integration
 ```
 
-If your change affects packaging or installation, also run:
+Also verify release packaging when your change affects it:
 
 ```bash
 npm run package
+npm run package:vsix
 ```
 
 ## Contribution Guidelines

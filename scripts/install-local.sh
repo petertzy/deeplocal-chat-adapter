@@ -16,5 +16,5 @@ code --install-extension "deeplocal-chat-adapter-0.1.0.vsix" --force
 
 echo
 echo "deeplocal-chat-adapter was installed into VS Code Extensions."
-echo "Reload VS Code with: Developer: Reload Window"
+echo "For final packaged-extension validation, reload VS Code with: Developer: Reload Window"
 echo "Then run: deeplocal-chat-adapter: Open"

@@ -1,4 +1,4 @@
-import { getConfig } from './config';
+import { DeepLocalConfig, getConfig } from './config';
 import { Logger } from './logger';
 import {
   ChatCompletionChunk,
@@ -18,7 +18,10 @@ interface PendingToolCall {
 export class DeepLocalClient {
   private readonly controllers = new Map<string, AbortController>();
 
-  constructor(private readonly logger: Logger) {}
+  constructor(
+    private readonly logger: Logger,
+    private readonly configuration: () => DeepLocalConfig = getConfig,
+  ) {}
 
   async listModels(): Promise<DeepLocalModel[]> {
     const response = await this.request('/models', { method: 'GET' });
@@ -132,7 +135,7 @@ export class DeepLocalClient {
   }
 
   private async request(path: string, init: RequestInit): Promise<Response> {
-    const config = getConfig();
+    const config = this.configuration();
     const url = `${config.baseUrl}${path}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.max(config.requestTimeout, 1000));

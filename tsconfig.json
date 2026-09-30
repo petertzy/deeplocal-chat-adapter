@@ -4,7 +4,7 @@
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
     "outDir": "out",
-    "rootDir": "src",
+    "rootDir": ".",
     "sourceMap": true,
     "strict": true,
     "esModuleInterop": true,
@@ -12,5 +12,6 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"]
   },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", ".vscode-test.mjs"],
   "exclude": ["node_modules", ".vscode-test", "dist"]
 }
