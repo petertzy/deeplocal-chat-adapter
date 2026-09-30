@@ -104,7 +104,12 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         placeHolder: 'Paste API key',
       });
       if (key !== undefined) {
-        await this.remoteApiKey(key);
+        const normalizedKey = key.trim();
+        if (!normalizedKey) {
+          this.post({ type: 'error', message: 'API key cannot be empty.' });
+          return;
+        }
+        await this.remoteApiKey(normalizedKey);
         await this.sendModels();
         this.post({ type: 'notice', message: 'Remote API key stored securely.' });
       }

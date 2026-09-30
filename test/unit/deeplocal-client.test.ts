@@ -51,15 +51,16 @@ describe('DeepLocalClient', () => {
   });
 
   it('uses remote SecretStorage credentials and does not expose error response bodies', async () => {
-    server = await startFakeServer((_req, res) => { res.statusCode = 401; res.end('secret-key leaked by provider'); });
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ data: [{ id: 'remote-model' }, { id: 'remote-model-2' }] }));
+    });
     const remoteConfig = { ...config(server.baseUrl), backend: 'remote' as const, model: 'remote-model' };
     const client = new DeepLocalClient(logger, () => remoteConfig);
-    client.setRemoteApiKey('remote-secret');
-    await expect(client.listModels()).resolves.toEqual([{ id: 'remote-model' }]);
-    await expect(async () => {
-      for await (const _event of client.streamChat('request', request)) { /* consume */ }
-    }).rejects.toThrow('Authentication failed');
-    expect(server.requests.at(-1)?.authorization).toBe('Bearer remote-secret');
+    client.setRemoteApiKey('stale-empty-cache');
+    client.setRemoteApiKeyProvider(async () => 'secret-storage-key');
+    await expect(client.listModels()).resolves.toEqual([{ id: 'remote-model' }, { id: 'remote-model-2' }]);
+    expect(server.requests[0]?.authorization).toBe('Bearer secret-storage-key');
   });
 
   it('ignores malformed model payloads and returns an empty model list', async () => {

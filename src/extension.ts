@@ -13,6 +13,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const logger = new Logger(output);
   const client = new DeepLocalClient(logger);
   const secretKey = 'deeplocal.remoteApiKey';
+  client.setRemoteApiKeyProvider(() => context.secrets.get(secretKey));
   client.setRemoteApiKey(await context.secrets.get(secretKey) ?? '');
 
   provider = new DeepLocalProvider(client, logger);
@@ -65,9 +66,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('deeplocal-chat-adapter.setRemoteApiKey', async () => {
       const key = await vscode.window.showInputBox({ prompt: 'Remote API key (stored in VS Code SecretStorage)', password: true, ignoreFocusOut: true });
       if (key !== undefined) {
-        await context.secrets.store(secretKey, key);
-        client.setRemoteApiKey(key);
-        vscode.window.showInformationMessage('Remote API key stored securely.');
+        const normalizedKey = key.trim();
+        if (!normalizedKey) {
+          vscode.window.showErrorMessage('Remote API key cannot be empty.');
+          return;
+        }
+        await context.secrets.store(secretKey, normalizedKey);
+        client.setRemoteApiKey(normalizedKey);
+        const storedKey = await context.secrets.get(secretKey);
+        vscode.window.showInformationMessage(storedKey ? 'Remote API key stored securely.' : 'Could not verify the remote API key in SecretStorage.');
       }
     }),
     vscode.commands.registerCommand('deeplocal-chat-adapter.clearRemoteApiKey', async () => {

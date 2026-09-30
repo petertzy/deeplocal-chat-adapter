@@ -18,17 +18,19 @@ interface PendingToolCall {
 export class DeepLocalClient {
   private readonly controllers = new Map<string, AbortController>();
   private remoteApiKey = '';
+  private remoteApiKeyProvider: (() => Promise<string | undefined>) | undefined;
 
   constructor(
     private readonly logger: Logger,
-    private readonly configuration: (remoteApiKey?: string) => DeepLocalConfig = getConfig,
+    private readonly configuration: () => DeepLocalConfig = getConfig,
   ) {}
 
   setRemoteApiKey(apiKey: string): void { this.remoteApiKey = apiKey; }
-  activeBackend(): 'local' | 'remote' { return this.configuration(this.remoteApiKey).backend; }
+  setRemoteApiKeyProvider(provider: () => PromiseLike<string | undefined>): void { this.remoteApiKeyProvider = async () => provider(); }
+  activeBackend(): 'local' | 'remote' { return this.configuration().backend; }
 
   async listModels(): Promise<DeepLocalModel[]> {
-    const config = this.configuration(this.remoteApiKey);
+    const config = this.configuration();
     if (config.backend === 'remote') {
       try {
         const response = await this.request('/models', { method: 'GET' });
@@ -155,8 +157,11 @@ export class DeepLocalClient {
   }
 
   private async request(path: string, init: RequestInit): Promise<Response> {
-    const config = this.configuration(this.remoteApiKey);
-    if (config.backend === 'remote' && !config.apiKey) {
+    const config = this.configuration();
+    const apiKey = config.backend === 'remote'
+      ? (await this.remoteApiKeyProvider?.() ?? this.remoteApiKey)
+      : config.apiKey;
+    if (config.backend === 'remote' && !apiKey) {
       throw new Error('Remote API key is missing. Use the remote API key control in the chat panel or run “deeplocal-chat-adapter: Set Remote API Key”.');
     }
     const url = `${config.baseUrl}${path}`;
@@ -179,7 +184,7 @@ export class DeepLocalClient {
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
-          ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
           ...init.headers,
         },
       });
