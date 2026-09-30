@@ -79,6 +79,39 @@ describe('DeepLocalClient', () => {
     expect(sent.max_tokens).toBeUndefined();
   });
 
+  it('retries remote function tools with reasoning_effort none when the provider requests it', async () => {
+    let calls = 0;
+    server = await startFakeServer((_req, res) => {
+      calls += 1;
+      if (calls === 1) {
+        res.statusCode = 400;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: { message: "Function tools with reasoning_effort are not supported for gpt-6-luna. Set reasoning_effort to 'none'." } }));
+        return;
+      }
+      res.setHeader('content-type', 'text/event-stream');
+      res.end('data: [DONE]\n\n');
+    });
+    const remoteConfig = { ...config(server.baseUrl), backend: 'remote' as const };
+    const client = new DeepLocalClient(logger, () => remoteConfig);
+    client.setRemoteApiKey('test-secret');
+    const toolRequest = {
+      ...request,
+      max_tokens: 8,
+      tools: [{ type: 'function' as const, function: { name: 'create_file', parameters: { type: 'object', properties: {} } } }],
+      tool_choice: 'auto' as const,
+    };
+    for await (const _event of client.streamChat('tool-request', toolRequest)) { /* consume */ }
+    expect(calls).toBe(2);
+    const first = JSON.parse(server.requests[0].body!);
+    const retry = JSON.parse(server.requests[1].body!);
+    expect(first.tools).toEqual(toolRequest.tools);
+    expect(retry.tools).toEqual(toolRequest.tools);
+    expect(retry.max_completion_tokens).toBe(8);
+    expect(retry.max_tokens).toBeUndefined();
+    expect(retry.reasoning_effort).toBe('none');
+  });
+
   it('uses remote SecretStorage credentials and does not expose error response bodies', async () => {
     server = await startFakeServer((_req, res) => {
       res.setHeader('content-type', 'application/json');

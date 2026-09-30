@@ -179,21 +179,35 @@ export class DeepLocalClient {
 
     try {
       this.logger.debug(`${init.method ?? 'GET'} ${url}`);
-      const response = await fetch(url, {
+      const requestBody = init.body && config.backend === 'remote' ? remoteCompatibleBody(init.body) : init.body;
+      const requestInit: RequestInit = {
         ...init,
-        ...(init.body && config.backend === 'remote' ? { body: remoteCompatibleBody(init.body) } : {}),
+        ...(requestBody !== undefined ? { body: requestBody } : {}),
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
           ...init.headers,
         },
-      });
+      };
+      let response = await fetch(url, requestInit);
+      let responseBody = '';
+
+      if (!response.ok) {
+        responseBody = await response.text().catch(() => '');
+        const retryBody = config.backend === 'remote'
+          ? retryWithNoReasoningEffort(requestBody, responseBody)
+          : undefined;
+        if (response.status === 400 && retryBody) {
+          this.logger.info('Remote API requested reasoning_effort=none for function tools; retrying once with tools preserved.');
+          response = await fetch(url, { ...requestInit, body: retryBody });
+          responseBody = response.ok ? '' : await response.text().catch(() => '');
+        }
+      }
 
       if (!response.ok) {
         const backend = config.backend === 'remote' ? 'Remote API' : 'DeepLocal';
-        const body = await response.text().catch(() => '');
-        const safeDetail = safeErrorDetail(body, apiKey);
+        const safeDetail = safeErrorDetail(responseBody, apiKey);
         const detail = response.status === 401 || response.status === 403
           ? 'Authentication failed. Check the API key.'
           : response.status === 404
@@ -220,6 +234,25 @@ function remoteCompatibleBody(body: BodyInit): BodyInit {
     return JSON.stringify(request);
   } catch {
     return body;
+  }
+}
+
+function retryWithNoReasoningEffort(body: BodyInit | null | undefined, errorBody: string): BodyInit | undefined {
+  if (typeof body !== 'string') return undefined;
+  try {
+    const parsedError = JSON.parse(errorBody) as { error?: { message?: unknown } };
+    const message = typeof parsedError.error?.message === 'string'
+      ? parsedError.error.message.replace(/\\_/g, '_').toLowerCase()
+      : '';
+    if (!message.includes('function tools') || !message.includes('reasoning_effort') || !message.includes("'none'")) {
+      return undefined;
+    }
+    const request = JSON.parse(body) as Record<string, unknown>;
+    if (!Array.isArray(request.tools) || request.tools.length === 0) return undefined;
+    request.reasoning_effort = 'none';
+    return JSON.stringify(request);
+  } catch {
+    return undefined;
   }
 }
 

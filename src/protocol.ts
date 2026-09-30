@@ -45,6 +45,7 @@ export interface ChatCompletionRequest {
   max_completion_tokens?: number;
   tools?: ChatTool[];
   tool_choice?: 'auto' | 'required';
+  reasoning_effort?: 'none';
 }
 
 export interface ChatCompletionChunk {
