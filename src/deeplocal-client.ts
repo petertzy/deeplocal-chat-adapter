@@ -181,6 +181,7 @@ export class DeepLocalClient {
       this.logger.debug(`${init.method ?? 'GET'} ${url}`);
       const response = await fetch(url, {
         ...init,
+        ...(init.body && config.backend === 'remote' ? { body: remoteCompatibleBody(init.body) } : {}),
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
@@ -205,6 +206,20 @@ export class DeepLocalClient {
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+function remoteCompatibleBody(body: BodyInit): BodyInit {
+  if (typeof body !== 'string') return body;
+  try {
+    const request = JSON.parse(body) as Record<string, unknown>;
+    if (typeof request.max_tokens === 'number' && request.max_completion_tokens === undefined) {
+      request.max_completion_tokens = request.max_tokens;
+      delete request.max_tokens;
+    }
+    return JSON.stringify(request);
+  } catch {
+    return body;
   }
 }
 

@@ -42,6 +42,7 @@ export interface ChatCompletionRequest {
   stream: boolean;
   temperature?: number;
   max_tokens?: number;
+  max_completion_tokens?: number;
   tools?: ChatTool[];
   tool_choice?: 'auto' | 'required';
 }

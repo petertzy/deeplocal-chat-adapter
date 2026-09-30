@@ -64,6 +64,21 @@ describe('DeepLocalClient', () => {
     }).rejects.toThrow('Unsupported parameter max_tokens. key=[redacted] and Bearer [redacted]');
   });
 
+  it('sends max_completion_tokens to remote APIs while keeping local request vocabulary unchanged', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.end('data: [DONE]\n\n');
+    });
+    const remoteConfig = { ...config(server.baseUrl), backend: 'remote' as const };
+    const client = new DeepLocalClient(logger, () => remoteConfig);
+    client.setRemoteApiKey('test-secret');
+    const remoteRequest = { ...request, max_tokens: 8 };
+    for await (const _event of client.streamChat('remote-request', remoteRequest)) { /* consume */ }
+    const sent = JSON.parse(server.requests[0].body!);
+    expect(sent.max_completion_tokens).toBe(8);
+    expect(sent.max_tokens).toBeUndefined();
+  });
+
   it('uses remote SecretStorage credentials and does not expose error response bodies', async () => {
     server = await startFakeServer((_req, res) => {
       res.setHeader('content-type', 'application/json');
