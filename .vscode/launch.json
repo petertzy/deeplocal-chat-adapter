@@ -5,8 +5,30 @@
       "name": "Run deeplocal-chat-adapter (Extension Development Host)",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "noDebug": true,
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--user-data-dir=${workspaceFolder}/.vscode-test/dev-user-data",
+        "--extensions-dir=${workspaceFolder}/.vscode-test/dev-extensions",
+        "--disable-extensions"
+      ],
+      "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Debug deeplocal-chat-adapter (Extension Development Host)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--user-data-dir=${workspaceFolder}/.vscode-test/dev-user-data",
+        "--extensions-dir=${workspaceFolder}/.vscode-test/dev-extensions",
+        "--disable-extensions"
+      ],
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "autoAttachChildProcesses": false,
+      "debugWebviews": false,
+      "debugWebWorkerHost": false,
+      "timeout": 30000,
       "preLaunchTask": "npm: compile"
     }
   ]

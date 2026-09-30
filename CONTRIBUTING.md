@@ -47,7 +47,7 @@ Run `npm run watch` in one terminal for continuous bundle and type checking. Run
 - `npm run check` runs type checking, lint, and unit tests.
 - `npm run test:integration` compiles the extension and launches an isolated VS Code Extension Host against a local fake OpenAI-compatible server.
 
-For interactive manual testing, select **Run deeplocal-chat-adapter (Extension Development Host)** in VS Code's **Run and Debug** panel and choose **Start Debugging**. The same configuration is available with **Command Palette → Debug: Start Debugging**. It compiles the current source and loads it directly into a separate Extension Development Host; it does not install a VSIX.
+For interactive manual testing, select **Run deeplocal-chat-adapter (Extension Development Host)** in VS Code's **Run and Debug** panel and choose **Start Debugging**. The same configuration is available with **Command Palette → Debug: Start Debugging**. It compiles the current source and opens a separate Extension Development Host with an isolated profile. This launch runs without an attached debugger, so it does not pause the extension host while waiting for a debugger connection. To use breakpoints, select **Debug deeplocal-chat-adapter (Extension Development Host)** instead.
 
 Before release, `npm run package` builds production output, `npm run package:vsix` creates the distributable, and `npm run install:local` installs that VSIX in the normal VS Code installation for final packaged-extension validation.
 
