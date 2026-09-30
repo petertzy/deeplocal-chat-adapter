@@ -50,6 +50,20 @@ describe('DeepLocalClient', () => {
     await expect(client.listModels()).rejects.toThrow('HTTP 503');
   });
 
+  it('shows safe provider validation details for HTTP 400 without leaking credentials', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.statusCode = 400;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: { message: 'Unsupported parameter max_tokens. key=test-secret and Bearer test-secret' } }));
+    });
+    const remoteConfig = { ...config(server.baseUrl), backend: 'remote' as const };
+    const client = new DeepLocalClient(logger, () => remoteConfig);
+    client.setRemoteApiKey('test-secret');
+    await expect(async () => {
+      for await (const _event of client.streamChat('request', request)) { /* consume */ }
+    }).rejects.toThrow('Unsupported parameter max_tokens. key=[redacted] and Bearer [redacted]');
+  });
+
   it('uses remote SecretStorage credentials and does not expose error response bodies', async () => {
     server = await startFakeServer((_req, res) => {
       res.setHeader('content-type', 'application/json');

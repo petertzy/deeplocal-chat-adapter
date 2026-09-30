@@ -65,6 +65,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showWarningMessage(`${config.backend === 'remote' ? 'Remote API' : 'DeepLocal'} is not reachable. Check the endpoint, API key, and model.`);
       }
     }),
+    vscode.commands.registerCommand('deeplocal-chat-adapter.testRemoteRequest', async () => {
+      const config = getConfig();
+      if (config.backend !== 'remote') {
+        vscode.window.showWarningMessage('Select the Remote OpenAI-compatible backend before testing it.');
+        return;
+      }
+      const fields = ['model', 'messages', 'stream', 'max_tokens'];
+      output.show(true);
+      logger.info(`Remote API diagnostic model=${config.model}; request fields=${fields.join(',')}`);
+      try {
+        let text = '';
+        for await (const event of client.streamChat(`diagnostic-${Date.now()}`, {
+          model: config.model,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          stream: true,
+          max_tokens: 8,
+        })) {
+          if (event.kind === 'text') text += event.value;
+        }
+        logger.info(`Remote API diagnostic succeeded; response length=${text.length}.`);
+        vscode.window.showInformationMessage('Remote API test succeeded.');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown request error';
+        logger.error(`Remote API diagnostic failed: ${message}`);
+        vscode.window.showErrorMessage(`Remote API test failed: ${message}`);
+      }
+    }),
     vscode.commands.registerCommand('deeplocal-chat-adapter.setRemoteApiKey', async () => {
       const key = await vscode.window.showInputBox({ prompt: 'Remote API key (stored in VS Code SecretStorage)', password: true, ignoreFocusOut: true });
       if (key !== undefined) {
@@ -107,6 +134,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const message = error instanceof Error ? error.message : String(error);
     logger.warning(`Initial model refresh failed: ${message}`);
   }
+
 }
 
 export function deactivate(): void {

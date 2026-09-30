@@ -190,9 +190,14 @@ export class DeepLocalClient {
       });
 
       if (!response.ok) {
-        await response.text().catch(() => '');
         const backend = config.backend === 'remote' ? 'Remote API' : 'DeepLocal';
-        const detail = response.status === 401 || response.status === 403 ? 'Authentication failed. Check the API key.' : response.status === 404 ? 'Endpoint or model not found.' : `HTTP ${response.status} ${response.statusText}`;
+        const body = await response.text().catch(() => '');
+        const safeDetail = safeErrorDetail(body, apiKey);
+        const detail = response.status === 401 || response.status === 403
+          ? 'Authentication failed. Check the API key.'
+          : response.status === 404
+            ? `Endpoint or model not found.${safeDetail ? ` ${safeDetail}` : ''}`
+            : `HTTP ${response.status} ${response.statusText}${safeDetail ? `: ${safeDetail}` : ''}`;
         throw new Error(`${backend} request failed: ${detail}`);
       }
 
@@ -200,6 +205,19 @@ export class DeepLocalClient {
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+function safeErrorDetail(body: string, apiKey: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+    if (typeof parsed.error?.message !== 'string') return '';
+    let message = parsed.error.message.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+    message = message.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]');
+    if (apiKey) message = message.split(apiKey).join('[redacted]');
+    return message.slice(0, 240);
+  } catch {
+    return '';
   }
 }
 
