@@ -17,13 +17,35 @@ interface PendingToolCall {
 
 export class DeepLocalClient {
   private readonly controllers = new Map<string, AbortController>();
+  private remoteApiKey = '';
+  private remoteApiKeyProvider: (() => Promise<string | undefined>) | undefined;
 
   constructor(
     private readonly logger: Logger,
     private readonly configuration: () => DeepLocalConfig = getConfig,
   ) {}
 
+  setRemoteApiKey(apiKey: string): void { this.remoteApiKey = apiKey; }
+  setRemoteApiKeyProvider(provider: () => PromiseLike<string | undefined>): void { this.remoteApiKeyProvider = async () => provider(); }
+  activeBackend(): 'local' | 'remote' { return this.configuration().backend; }
+
   async listModels(): Promise<DeepLocalModel[]> {
+    const config = this.configuration();
+    if (config.backend === 'remote') {
+      try {
+        const response = await this.request('/models', { method: 'GET' });
+        const body = await response.json() as ModelsResponse;
+        const models = Array.isArray(body.data) ? body.data.filter((model) => Boolean(model.id)) : [];
+        if (models.length) {
+          return config.model && !models.some((model) => model.id === config.model)
+            ? [{ id: config.model }, ...models]
+            : models;
+        }
+      } catch (error) {
+        this.logger.warning(`Remote model discovery failed: ${messageOf(error)}`);
+      }
+      return config.model ? [{ id: config.model }] : [];
+    }
     const response = await this.request('/models', { method: 'GET' });
     const body = await response.json() as ModelsResponse;
     return Array.isArray(body.data) ? body.data.filter((model) => Boolean(model.id)) : [];
@@ -32,10 +54,10 @@ export class DeepLocalClient {
   async checkConnection(): Promise<boolean> {
     try {
       const models = await this.listModels();
-      this.logger.info(`DeepLocal connection OK. Found ${models.length} model(s).`);
+      this.logger.info(`${this.activeBackend()} connection OK. Found ${models.length} model(s).`);
       return true;
     } catch (error) {
-      this.logger.warning(`DeepLocal connection check failed: ${messageOf(error)}`);
+      this.logger.warning(`${this.activeBackend()} connection check failed: ${messageOf(error)}`);
       return false;
     }
   }
@@ -136,6 +158,12 @@ export class DeepLocalClient {
 
   private async request(path: string, init: RequestInit): Promise<Response> {
     const config = this.configuration();
+    const apiKey = config.backend === 'remote'
+      ? (await this.remoteApiKeyProvider?.() ?? this.remoteApiKey)
+      : config.apiKey;
+    if (config.backend === 'remote' && !apiKey) {
+      throw new Error('Remote API key is missing. Use the remote API key control in the chat panel or run “deeplocal-chat-adapter: Set Remote API Key”.');
+    }
     const url = `${config.baseUrl}${path}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.max(config.requestTimeout, 1000));
@@ -151,25 +179,93 @@ export class DeepLocalClient {
 
     try {
       this.logger.debug(`${init.method ?? 'GET'} ${url}`);
-      const response = await fetch(url, {
+      const requestBody = init.body && config.backend === 'remote' ? remoteCompatibleBody(init.body) : init.body;
+      const requestInit: RequestInit = {
         ...init,
+        ...(requestBody !== undefined ? { body: requestBody } : {}),
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
-          ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
           ...init.headers,
         },
-      });
+      };
+      let response = await fetch(url, requestInit);
+      let responseBody = '';
 
       if (!response.ok) {
-        const details = await response.text().catch(() => '');
-        throw new Error(`HTTP ${response.status} ${response.statusText}${details ? `: ${details}` : ''}`);
+        responseBody = await response.text().catch(() => '');
+        const retryBody = config.backend === 'remote'
+          ? retryWithNoReasoningEffort(requestBody, responseBody)
+          : undefined;
+        if (response.status === 400 && retryBody) {
+          this.logger.info('Remote API requested reasoning_effort=none for function tools; retrying once with tools preserved.');
+          response = await fetch(url, { ...requestInit, body: retryBody });
+          responseBody = response.ok ? '' : await response.text().catch(() => '');
+        }
+      }
+
+      if (!response.ok) {
+        const backend = config.backend === 'remote' ? 'Remote API' : 'DeepLocal';
+        const safeDetail = safeErrorDetail(responseBody, apiKey);
+        const detail = response.status === 401 || response.status === 403
+          ? 'Authentication failed. Check the API key.'
+          : response.status === 404
+            ? `Endpoint or model not found.${safeDetail ? ` ${safeDetail}` : ''}`
+            : `HTTP ${response.status} ${response.statusText}${safeDetail ? `: ${safeDetail}` : ''}`;
+        throw new Error(`${backend} request failed: ${detail}`);
       }
 
       return response;
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+function remoteCompatibleBody(body: BodyInit): BodyInit {
+  if (typeof body !== 'string') return body;
+  try {
+    const request = JSON.parse(body) as Record<string, unknown>;
+    if (typeof request.max_tokens === 'number' && request.max_completion_tokens === undefined) {
+      request.max_completion_tokens = request.max_tokens;
+      delete request.max_tokens;
+    }
+    return JSON.stringify(request);
+  } catch {
+    return body;
+  }
+}
+
+function retryWithNoReasoningEffort(body: BodyInit | null | undefined, errorBody: string): BodyInit | undefined {
+  if (typeof body !== 'string') return undefined;
+  try {
+    const parsedError = JSON.parse(errorBody) as { error?: { message?: unknown } };
+    const message = typeof parsedError.error?.message === 'string'
+      ? parsedError.error.message.replace(/\\_/g, '_').toLowerCase()
+      : '';
+    if (!message.includes('function tools') || !message.includes('reasoning_effort') || !message.includes("'none'")) {
+      return undefined;
+    }
+    const request = JSON.parse(body) as Record<string, unknown>;
+    if (!Array.isArray(request.tools) || request.tools.length === 0) return undefined;
+    request.reasoning_effort = 'none';
+    return JSON.stringify(request);
+  } catch {
+    return undefined;
+  }
+}
+
+function safeErrorDetail(body: string, apiKey: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+    if (typeof parsed.error?.message !== 'string') return '';
+    let message = parsed.error.message.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+    message = message.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]');
+    if (apiKey) message = message.split(apiKey).join('[redacted]');
+    return message.slice(0, 240);
+  } catch {
+    return '';
   }
 }
 

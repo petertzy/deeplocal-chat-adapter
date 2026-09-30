@@ -20,6 +20,12 @@ Before using the extension, start the separate local DeepLocal service and keep 
 https://github.com/petertzy/deepLocal
 ```
 
+## Backend configuration
+
+Local DeepLocal remains the default backend at `http://127.0.0.1:14567/v1`. The extension contributes one VS Code chat provider named **DeepLocal / OpenAI-compatible**; its models are labeled `deeplocal` locally and `openai` remotely in the model picker. Use **deeplocal-chat-adapter: Open Settings** and set `deeplocal.backend` to `remote` to use an OpenAI-compatible API. The sidebar's **Change** button also switches the backend. Configure `deeplocal.remote.baseUrl` (default `https://api.openai.com/v1`) and `deeplocal.remote.model` (default `gpt-4.1-mini`), then run **deeplocal-chat-adapter: Set Remote API Key**. The key is stored in VS Code SecretStorage and is not part of settings or the repository. Run **Check Connection** to verify the selected backend. Set `deeplocal.backend` back to `local` to return to DeepLocal.
+
+Remote API requests may incur provider charges. Use **deeplocal-chat-adapter: Test Remote API Request** to send a minimal streaming chat request without tools; this helps distinguish endpoint/model compatibility from tool-schema issues. Remote access is optional; automated tests use a fake OpenAI-compatible server and never require a real API key or make billable requests. Model discovery uses `/v1/models`; if it is unavailable, the configured remote model remains selectable for manual use.
+
 ## Quick Start
 
 1. Clone this repository and open it locally:

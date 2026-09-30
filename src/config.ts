@@ -1,6 +1,8 @@
 export interface DeepLocalConfig {
+  backend: 'local' | 'remote';
   baseUrl: string;
   apiKey: string;
+  model: string;
   requestTimeout: number;
   maxInputTokens: number;
   maxOutputTokens: number;
@@ -10,15 +12,18 @@ export interface DeepLocalConfig {
   logLevel: 'debug' | 'info' | 'warning' | 'error' | 'off';
 }
 
-export function getConfig(): DeepLocalConfig {
+export function getConfig(remoteApiKey = ''): DeepLocalConfig {
   // Keep VS Code access behind a runtime require so pure client tests do not
   // need to load the VS Code module.
   const vscode = require('vscode') as typeof import('vscode');
   const config = vscode.workspace.getConfiguration('deeplocal');
 
+  const backend = config.get<'local' | 'remote'>('backend', 'local');
   return {
-    baseUrl: normalizeBaseUrl(config.get<string>('baseUrl', 'http://127.0.0.1:14567/v1')),
-    apiKey: config.get<string>('apiKey', ''),
+    backend,
+    baseUrl: normalizeBaseUrl(config.get<string>(backend === 'remote' ? 'remote.baseUrl' : 'baseUrl', backend === 'remote' ? 'https://api.openai.com/v1' : 'http://127.0.0.1:14567/v1')),
+    apiKey: backend === 'remote' ? remoteApiKey : config.get<string>('apiKey', ''),
+    model: config.get<string>('remote.model', ''),
     requestTimeout: config.get<number>('requestTimeout', 120000),
     maxInputTokens: config.get<number>('maxInputTokens', 131072),
     maxOutputTokens: config.get<number>('maxOutputTokens', 16384),
