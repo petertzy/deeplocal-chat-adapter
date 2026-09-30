@@ -20,7 +20,7 @@ export class DeepLocalProvider implements vscode.LanguageModelChatProvider<DeepL
 
   async refreshModels(): Promise<void> {
     this.models = await this.client.listModels();
-    this.logger.info(`Discovered ${this.models.length} DeepLocal model(s).`);
+    this.logger.info(`Discovered ${this.models.length} model(s) for ${this.client.activeBackend()} backend.`);
     this.changeEmitter.fire();
   }
 
@@ -31,10 +31,10 @@ export class DeepLocalProvider implements vscode.LanguageModelChatProvider<DeepL
       id: model.id,
       deeplocalId: model.id,
       name: displayName(model.id),
-      family: 'deeplocal',
+      family: config.backend === 'remote' ? 'openai' : 'deeplocal',
       version: '1',
       tooltip: model.id,
-      detail: 'DeepLocal',
+      detail: config.backend === 'remote' ? 'Remote OpenAI-compatible API' : 'Local DeepLocal',
       maxInputTokens: config.maxInputTokens,
       maxOutputTokens: config.maxOutputTokens,
       capabilities: {
@@ -79,7 +79,7 @@ export class DeepLocalProvider implements vscode.LanguageModelChatProvider<DeepL
       tool_choice: tools && options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' as const : undefined,
     };
 
-    this.logger.debug(`Sending request to DeepLocal model ${model.deeplocalId}.`);
+    this.logger.debug(`Sending request to ${config.backend} model ${model.deeplocalId}.`);
 
     for await (const event of this.client.streamChat(requestId, request)) {
       if (token.isCancellationRequested) {

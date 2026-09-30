@@ -6,7 +6,7 @@ import { Logger } from './logger';
 import { ChatMessage, ToolCall } from './protocol';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession';
+  type: 'ready' | 'send' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend';
   text?: string;
   model?: string;
   sessionId?: string;
@@ -84,6 +84,17 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
+    if (message.type === 'setBackend') {
+      const selected = await vscode.window.showQuickPick([
+        { label: 'Local DeepLocal', description: 'http://127.0.0.1:14567/v1', value: 'local' },
+        { label: 'Remote OpenAI-compatible API', description: 'May incur provider charges', value: 'remote' },
+      ], { placeHolder: 'Choose inference backend' });
+      if (selected) {
+        await vscode.workspace.getConfiguration('deeplocal').update('backend', selected.value, vscode.ConfigurationTarget.Global);
+        await this.sendModels();
+      }
+      return;
+    }
     if (message.type === 'ready' || message.type === 'refreshModels') {
       await this.sendModels();
       this.postSessions();
@@ -129,6 +140,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         type: 'models',
         models: models.map((model) => model.id),
         backend: getConfig().backend,
+        baseUrl: getConfig().baseUrl,
       });
     } catch (error) {
       this.postError(`Failed to load ${getConfig().backend === 'remote' ? 'remote' : 'DeepLocal'} models: ${messageOf(error)}`);
@@ -621,6 +633,14 @@ function renderHtml(webview: vscode.Webview): string {
       grid-template-columns: 1fr auto auto;
       gap: 6px;
     }
+    .backend-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 12px;
+      opacity: 0.9;
+    }
     .actions {
       display: grid;
       grid-template-columns: auto 1fr;
@@ -658,6 +678,10 @@ function renderHtml(webview: vscode.Webview): string {
         <button id="newSession">New</button>
         <button id="deleteSession">Delete</button>
       </div>
+      <div class="backend-row">
+        <span id="backendLabel">Backend: Local DeepLocal</span>
+        <button id="backendButton">Change</button>
+      </div>
       <textarea id="prompt" placeholder="Ask DeepLocal..."></textarea>
       <div class="controls">
         <select id="model"></select>
@@ -690,6 +714,8 @@ function renderHtml(webview: vscode.Webview): string {
     const newSession = document.getElementById('newSession');
     const deleteSession = document.getElementById('deleteSession');
     const restoreSession = document.getElementById('restoreSession');
+    const backendButton = document.getElementById('backendButton');
+    const backendLabel = document.getElementById('backendLabel');
     const useAgent = document.getElementById('useAgent');
     const editActiveFile = document.getElementById('editActiveFile');
     let currentAssistant;
@@ -711,7 +737,10 @@ function renderHtml(webview: vscode.Webview): string {
     window.addEventListener('message', (event) => {
       const msg = event.data;
       if (msg.type === 'models') {
-        document.title = msg.backend === 'remote' ? 'Remote API' : 'DeepLocal';
+        const remote = msg.backend === 'remote';
+        document.title = remote ? 'Remote OpenAI-compatible API' : 'Local DeepLocal';
+        backendLabel.textContent = remote ? 'Backend: Remote OpenAI-compatible API' : 'Backend: Local DeepLocal';
+        model.setAttribute('aria-label', remote ? 'Remote API model' : 'DeepLocal model');
         model.replaceChildren(...msg.models.map((id) => {
           const option = document.createElement('option');
           option.value = id;
@@ -779,6 +808,7 @@ function renderHtml(webview: vscode.Webview): string {
     });
 
     refresh.addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
+    backendButton.addEventListener('click', () => vscode.postMessage({ type: 'setBackend' }));
     newSession.addEventListener('click', () => vscode.postMessage({ type: 'newSession' }));
     deleteSession.addEventListener('click', () => vscode.postMessage({ type: 'deleteSession', sessionId: session.value }));
     restoreSession.addEventListener('click', () => vscode.postMessage({ type: 'switchSession', sessionId: session.value }));

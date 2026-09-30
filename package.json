@@ -37,7 +37,7 @@
     "languageModelChatProviders": [
       {
         "vendor": "deeplocal-chat-adapter",
-        "displayName": "DeepLocal",
+        "displayName": "DeepLocal / OpenAI-compatible",
         "managementCommand": "deeplocal-chat-adapter.openSettings"
       }
     ],
@@ -67,7 +67,7 @@
           "default": "http://127.0.0.1:14567/v1",
           "description": "DeepLocal OpenAI-compatible API base URL."
         },
-        "deeplocal.backend": { "type": "string", "enum": ["local", "remote"], "default": "local", "description": "Inference backend. Remote calls may incur provider charges." },
+        "deeplocal.backend": { "type": "string", "enum": ["local", "remote"], "enumDescriptions": ["Use the local DeepLocal service.", "Use the configured remote OpenAI-compatible API. Remote calls may incur provider charges."], "default": "local", "scope": "application", "description": "Select which service the DeepLocal / OpenAI-compatible provider uses." },
         "deeplocal.remote.baseUrl": { "type": "string", "default": "https://api.openai.com/v1", "description": "Remote OpenAI-compatible API base URL." },
         "deeplocal.remote.model": { "type": "string", "default": "gpt-4.1-mini", "description": "Remote model ID. Used directly if model discovery is unavailable." },
         "deeplocal.apiKey": {

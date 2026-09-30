@@ -23,6 +23,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     provider,
     vscode.window.registerWebviewViewProvider('deeplocal-chat-adapter.view', chatPanel),
     vscode.lm.registerLanguageModelChatProvider('deeplocal-chat-adapter', provider),
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
+      if (event.affectsConfiguration('deeplocal.backend') || event.affectsConfiguration('deeplocal.remote.baseUrl') || event.affectsConfiguration('deeplocal.remote.model') || event.affectsConfiguration('deeplocal.baseUrl')) {
+        try {
+          await provider?.refreshModels();
+        } catch (error) {
+          logger.warning(`Model refresh after configuration change failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }),
     vscode.commands.registerCommand('deeplocal-chat-adapter.refreshModels', async () => {
       output.show(true);
       try {
