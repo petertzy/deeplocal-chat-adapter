@@ -29,15 +29,20 @@ export class DeepLocalClient {
 
   async listModels(): Promise<DeepLocalModel[]> {
     const config = this.configuration(this.remoteApiKey);
-    if (config.backend === 'remote' && config.model) {
+    if (config.backend === 'remote') {
       try {
         const response = await this.request('/models', { method: 'GET' });
         const body = await response.json() as ModelsResponse;
         const models = Array.isArray(body.data) ? body.data.filter((model) => Boolean(model.id)) : [];
-        return models.some((model) => model.id === config.model) ? models : [{ id: config.model }, ...models];
-      } catch {
-        return [{ id: config.model }];
+        if (models.length) {
+          return config.model && !models.some((model) => model.id === config.model)
+            ? [{ id: config.model }, ...models]
+            : models;
+        }
+      } catch (error) {
+        this.logger.warning(`Remote model discovery failed: ${messageOf(error)}`);
       }
+      return config.model ? [{ id: config.model }] : [];
     }
     const response = await this.request('/models', { method: 'GET' });
     const body = await response.json() as ModelsResponse;
@@ -47,10 +52,10 @@ export class DeepLocalClient {
   async checkConnection(): Promise<boolean> {
     try {
       const models = await this.listModels();
-      this.logger.info(`DeepLocal connection OK. Found ${models.length} model(s).`);
+      this.logger.info(`${this.activeBackend()} connection OK. Found ${models.length} model(s).`);
       return true;
     } catch (error) {
-      this.logger.warning(`DeepLocal connection check failed: ${messageOf(error)}`);
+      this.logger.warning(`${this.activeBackend()} connection check failed: ${messageOf(error)}`);
       return false;
     }
   }
@@ -152,7 +157,7 @@ export class DeepLocalClient {
   private async request(path: string, init: RequestInit): Promise<Response> {
     const config = this.configuration(this.remoteApiKey);
     if (config.backend === 'remote' && !config.apiKey) {
-      throw new Error('Remote API key is missing. Run “deeplocal-chat-adapter: Set Remote API Key”.');
+      throw new Error('Remote API key is missing. Use the remote API key control in the chat panel or run “deeplocal-chat-adapter: Set Remote API Key”.');
     }
     const url = `${config.baseUrl}${path}`;
     const controller = new AbortController();

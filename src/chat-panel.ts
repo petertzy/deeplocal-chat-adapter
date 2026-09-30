@@ -6,7 +6,7 @@ import { Logger } from './logger';
 import { ChatMessage, ToolCall } from './protocol';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend';
+  type: 'ready' | 'send' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey';
   text?: string;
   model?: string;
   sessionId?: string;
@@ -43,6 +43,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     private readonly context: vscode.ExtensionContext,
     private readonly client: DeepLocalClient,
     private readonly logger: Logger,
+    private readonly remoteApiKey: (key?: string) => Promise<string | void>,
   ) {
     this.sessions = this.loadSessions().map(repairTranscript);
     this.activeSessionId = this.context.globalState.get<string>(ChatPanel.activeSessionKey, this.sessions[0].id);
@@ -95,6 +96,25 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       }
       return;
     }
+    if (message.type === 'setRemoteApiKey') {
+      const key = await vscode.window.showInputBox({
+        prompt: 'Remote API key (stored securely in VS Code SecretStorage)',
+        password: true,
+        ignoreFocusOut: true,
+        placeHolder: 'Paste API key',
+      });
+      if (key !== undefined) {
+        await this.remoteApiKey(key);
+        await this.sendModels();
+        this.post({ type: 'notice', message: 'Remote API key stored securely.' });
+      }
+      return;
+    }
+    if (message.type === 'clearRemoteApiKey') {
+      await this.remoteApiKey();
+      this.post({ type: 'notice', message: 'Remote API key cleared.' });
+      return;
+    }
     if (message.type === 'ready' || message.type === 'refreshModels') {
       await this.sendModels();
       this.postSessions();
@@ -140,6 +160,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         type: 'models',
         models: models.map((model) => model.id),
         backend: getConfig().backend,
+        hasApiKey: getConfig().backend === 'remote' ? await this.remoteApiKey() !== '' : false,
         baseUrl: getConfig().baseUrl,
       });
     } catch (error) {
@@ -682,6 +703,11 @@ function renderHtml(webview: vscode.Webview): string {
         <span id="backendLabel">Backend: Local DeepLocal</span>
         <button id="backendButton">Change</button>
       </div>
+      <div class="backend-row" id="remoteKeyRow" hidden>
+        <span id="remoteKeyStatus">Remote API key not set</span>
+        <button id="setRemoteKeyButton">Set API key</button>
+        <button id="clearRemoteKeyButton">Clear</button>
+      </div>
       <textarea id="prompt" placeholder="Ask DeepLocal..."></textarea>
       <div class="controls">
         <select id="model"></select>
@@ -716,6 +742,10 @@ function renderHtml(webview: vscode.Webview): string {
     const restoreSession = document.getElementById('restoreSession');
     const backendButton = document.getElementById('backendButton');
     const backendLabel = document.getElementById('backendLabel');
+    const remoteKeyRow = document.getElementById('remoteKeyRow');
+    const remoteKeyStatus = document.getElementById('remoteKeyStatus');
+    const setRemoteKeyButton = document.getElementById('setRemoteKeyButton');
+    const clearRemoteKeyButton = document.getElementById('clearRemoteKeyButton');
     const useAgent = document.getElementById('useAgent');
     const editActiveFile = document.getElementById('editActiveFile');
     let currentAssistant;
@@ -740,6 +770,9 @@ function renderHtml(webview: vscode.Webview): string {
         const remote = msg.backend === 'remote';
         document.title = remote ? 'Remote OpenAI-compatible API' : 'Local DeepLocal';
         backendLabel.textContent = remote ? 'Backend: Remote OpenAI-compatible API' : 'Backend: Local DeepLocal';
+        remoteKeyRow.hidden = !remote;
+        remoteKeyStatus.textContent = msg.hasApiKey ? 'Remote API key is set' : 'Remote API key not set';
+        setRemoteKeyButton.textContent = msg.hasApiKey ? 'Update API key' : 'Set API key';
         model.setAttribute('aria-label', remote ? 'Remote API model' : 'DeepLocal model');
         model.replaceChildren(...msg.models.map((id) => {
           const option = document.createElement('option');
@@ -809,6 +842,8 @@ function renderHtml(webview: vscode.Webview): string {
 
     refresh.addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
     backendButton.addEventListener('click', () => vscode.postMessage({ type: 'setBackend' }));
+    setRemoteKeyButton.addEventListener('click', () => vscode.postMessage({ type: 'setRemoteApiKey' }));
+    clearRemoteKeyButton.addEventListener('click', () => vscode.postMessage({ type: 'clearRemoteApiKey' }));
     newSession.addEventListener('click', () => vscode.postMessage({ type: 'newSession' }));
     deleteSession.addEventListener('click', () => vscode.postMessage({ type: 'deleteSession', sessionId: session.value }));
     restoreSession.addEventListener('click', () => vscode.postMessage({ type: 'switchSession', sessionId: session.value }));
