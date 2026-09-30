@@ -12,6 +12,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const output = vscode.window.createOutputChannel('DeepLocal');
   const logger = new Logger(output);
   const client = new DeepLocalClient(logger);
+  const secretKey = 'deeplocal.remoteApiKey';
+  client.setRemoteApiKey(await context.secrets.get(secretKey) ?? '');
 
   provider = new DeepLocalProvider(client, logger);
   chatPanel = new ChatPanel(context, client, logger);
@@ -34,13 +36,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('deeplocal-chat-adapter.checkConnection', async () => {
       output.show(true);
-      logger.info(`Checking DeepLocal at ${getConfig().baseUrl}`);
+      const config = getConfig(await context.secrets.get(secretKey) ?? '');
+      logger.info(`Checking ${config.backend === 'remote' ? 'remote API' : 'DeepLocal'} at ${config.baseUrl}`);
       const ok = await client.checkConnection();
       if (ok) {
-        vscode.window.showInformationMessage('DeepLocal is reachable.');
+        vscode.window.showInformationMessage(`${config.backend === 'remote' ? 'Remote API' : 'DeepLocal'} is reachable.`);
       } else {
-        vscode.window.showWarningMessage('DeepLocal is not reachable. Check the base URL and server status.');
+        vscode.window.showWarningMessage(`${config.backend === 'remote' ? 'Remote API' : 'DeepLocal'} is not reachable. Check the endpoint, API key, and model.`);
       }
+    }),
+    vscode.commands.registerCommand('deeplocal-chat-adapter.setRemoteApiKey', async () => {
+      const key = await vscode.window.showInputBox({ prompt: 'Remote API key (stored in VS Code SecretStorage)', password: true, ignoreFocusOut: true });
+      if (key !== undefined) {
+        await context.secrets.store(secretKey, key);
+        client.setRemoteApiKey(key);
+        vscode.window.showInformationMessage('Remote API key stored securely.');
+      }
+    }),
+    vscode.commands.registerCommand('deeplocal-chat-adapter.clearRemoteApiKey', async () => {
+      await context.secrets.delete(secretKey);
+      client.setRemoteApiKey('');
+      vscode.window.showInformationMessage('Remote API key cleared.');
     }),
     vscode.commands.registerCommand('deeplocal-chat-adapter.openSettings', async () => {
       await vscode.commands.executeCommand('workbench.action.openSettings', 'deeplocal');
@@ -57,7 +73,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  logger.info(`DeepLocal activated, version ${context.extension.packageJSON.version}.`);
+  logger.info(`deeplocal-chat-adapter activated using ${getConfig().backend} backend, version ${context.extension.packageJSON.version}.`);
 
   try {
     await provider.refreshModels();

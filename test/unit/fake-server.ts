@@ -3,7 +3,7 @@ import { AddressInfo } from 'node:net';
 
 export interface FakeServer {
   baseUrl: string;
-  requests: Array<{ method: string; path: string; body?: string }>;
+  requests: Array<{ method: string; path: string; body?: string; authorization?: string }>;
   close(): Promise<void>;
 }
 
@@ -16,7 +16,7 @@ export async function startFakeServer(
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
     request.on('end', () => {
       const body = Buffer.concat(chunks).toString('utf8');
-      requests.push({ method: request.method ?? 'GET', path: request.url ?? '/', body });
+      requests.push({ method: request.method ?? 'GET', path: request.url ?? '/', body, authorization: request.headers.authorization });
       handler(request, response, body);
     });
   });

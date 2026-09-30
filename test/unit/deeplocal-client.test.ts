@@ -5,7 +5,7 @@ import { ChatCompletionRequest } from '../../src/protocol';
 import { startFakeServer, FakeServer } from './fake-server';
 
 const config = (baseUrl: string, requestTimeout = 1000): DeepLocalConfig => ({
-  baseUrl, apiKey: 'test-key', requestTimeout, maxInputTokens: 4096, maxOutputTokens: 1024,
+  backend: 'local', baseUrl, apiKey: 'test-key', model: '', requestTimeout, maxInputTokens: 4096, maxOutputTokens: 1024,
   enableToolCalling: true, injectSystemPrompt: true, agentMaxTurns: 8, logLevel: 'off',
 });
 const logger = { info: vi.fn(), warning: vi.fn(), debug: vi.fn(), error: vi.fn() } as never;
@@ -48,6 +48,18 @@ describe('DeepLocalClient', () => {
     server = await startFakeServer((_req, res) => { res.statusCode = 503; res.end('temporarily unavailable'); });
     const client = new DeepLocalClient(logger, () => config(server!.baseUrl));
     await expect(client.listModels()).rejects.toThrow('HTTP 503');
+  });
+
+  it('uses remote SecretStorage credentials and does not expose error response bodies', async () => {
+    server = await startFakeServer((_req, res) => { res.statusCode = 401; res.end('secret-key leaked by provider'); });
+    const remoteConfig = { ...config(server.baseUrl), backend: 'remote' as const, model: 'remote-model' };
+    const client = new DeepLocalClient(logger, () => remoteConfig);
+    client.setRemoteApiKey('remote-secret');
+    await expect(client.listModels()).resolves.toEqual([{ id: 'remote-model' }]);
+    await expect(async () => {
+      for await (const _event of client.streamChat('request', request)) { /* consume */ }
+    }).rejects.toThrow('Authentication failed');
+    expect(server.requests.at(-1)?.authorization).toBe('Bearer remote-secret');
   });
 
   it('ignores malformed model payloads and returns an empty model list', async () => {

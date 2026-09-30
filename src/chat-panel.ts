@@ -128,9 +128,10 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       this.post({
         type: 'models',
         models: models.map((model) => model.id),
+        backend: getConfig().backend,
       });
     } catch (error) {
-      this.postError(`Failed to load DeepLocal models: ${messageOf(error)}`);
+      this.postError(`Failed to load ${getConfig().backend === 'remote' ? 'remote' : 'DeepLocal'} models: ${messageOf(error)}`);
     }
   }
 
@@ -710,6 +711,7 @@ function renderHtml(webview: vscode.Webview): string {
     window.addEventListener('message', (event) => {
       const msg = event.data;
       if (msg.type === 'models') {
+        document.title = msg.backend === 'remote' ? 'Remote API' : 'DeepLocal';
         model.replaceChildren(...msg.models.map((id) => {
           const option = document.createElement('option');
           option.value = id;

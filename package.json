@@ -67,6 +67,9 @@
           "default": "http://127.0.0.1:14567/v1",
           "description": "DeepLocal OpenAI-compatible API base URL."
         },
+        "deeplocal.backend": { "type": "string", "enum": ["local", "remote"], "default": "local", "description": "Inference backend. Remote calls may incur provider charges." },
+        "deeplocal.remote.baseUrl": { "type": "string", "default": "https://api.openai.com/v1", "description": "Remote OpenAI-compatible API base URL." },
+        "deeplocal.remote.model": { "type": "string", "default": "gpt-4.1-mini", "description": "Remote model ID. Used directly if model discovery is unavailable." },
         "deeplocal.apiKey": {
           "type": "string",
           "default": "",
@@ -143,6 +146,14 @@
       {
         "command": "deeplocal-chat-adapter.newSession",
         "title": "deeplocal-chat-adapter: New Session"
+      },
+      {
+        "command": "deeplocal-chat-adapter.setRemoteApiKey",
+        "title": "deeplocal-chat-adapter: Set Remote API Key"
+      },
+      {
+        "command": "deeplocal-chat-adapter.clearRemoteApiKey",
+        "title": "deeplocal-chat-adapter: Clear Remote API Key"
       }
     ]
   },

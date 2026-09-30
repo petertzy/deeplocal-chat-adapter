@@ -17,13 +17,28 @@ interface PendingToolCall {
 
 export class DeepLocalClient {
   private readonly controllers = new Map<string, AbortController>();
+  private remoteApiKey = '';
 
   constructor(
     private readonly logger: Logger,
-    private readonly configuration: () => DeepLocalConfig = getConfig,
+    private readonly configuration: (remoteApiKey?: string) => DeepLocalConfig = getConfig,
   ) {}
 
+  setRemoteApiKey(apiKey: string): void { this.remoteApiKey = apiKey; }
+  activeBackend(): 'local' | 'remote' { return this.configuration(this.remoteApiKey).backend; }
+
   async listModels(): Promise<DeepLocalModel[]> {
+    const config = this.configuration(this.remoteApiKey);
+    if (config.backend === 'remote' && config.model) {
+      try {
+        const response = await this.request('/models', { method: 'GET' });
+        const body = await response.json() as ModelsResponse;
+        const models = Array.isArray(body.data) ? body.data.filter((model) => Boolean(model.id)) : [];
+        return models.some((model) => model.id === config.model) ? models : [{ id: config.model }, ...models];
+      } catch {
+        return [{ id: config.model }];
+      }
+    }
     const response = await this.request('/models', { method: 'GET' });
     const body = await response.json() as ModelsResponse;
     return Array.isArray(body.data) ? body.data.filter((model) => Boolean(model.id)) : [];
@@ -135,7 +150,10 @@ export class DeepLocalClient {
   }
 
   private async request(path: string, init: RequestInit): Promise<Response> {
-    const config = this.configuration();
+    const config = this.configuration(this.remoteApiKey);
+    if (config.backend === 'remote' && !config.apiKey) {
+      throw new Error('Remote API key is missing. Run “deeplocal-chat-adapter: Set Remote API Key”.');
+    }
     const url = `${config.baseUrl}${path}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.max(config.requestTimeout, 1000));
@@ -162,8 +180,10 @@ export class DeepLocalClient {
       });
 
       if (!response.ok) {
-        const details = await response.text().catch(() => '');
-        throw new Error(`HTTP ${response.status} ${response.statusText}${details ? `: ${details}` : ''}`);
+        await response.text().catch(() => '');
+        const backend = config.backend === 'remote' ? 'Remote API' : 'DeepLocal';
+        const detail = response.status === 401 || response.status === 403 ? 'Authentication failed. Check the API key.' : response.status === 404 ? 'Endpoint or model not found.' : `HTTP ${response.status} ${response.statusText}`;
+        throw new Error(`${backend} request failed: ${detail}`);
       }
 
       return response;
