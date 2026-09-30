@@ -1,5 +1,3 @@
-import * as vscode from 'vscode';
-
 export interface DeepLocalConfig {
   baseUrl: string;
   apiKey: string;
@@ -13,6 +11,9 @@ export interface DeepLocalConfig {
 }
 
 export function getConfig(): DeepLocalConfig {
+  // Keep VS Code access behind a runtime require so pure client tests do not
+  // need to load the VS Code module.
+  const vscode = require('vscode') as typeof import('vscode');
   const config = vscode.workspace.getConfiguration('deeplocal');
 
   return {

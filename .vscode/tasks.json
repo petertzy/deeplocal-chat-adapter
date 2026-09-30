@@ -7,7 +7,8 @@
       "group": "build",
       "problemMatcher": "$tsc",
       "label": "npm: compile",
-      "detail": "npm run compile"
+      "detail": "npm run compile",
+      "runOptions": { "reevaluateOnRerun": true }
     }
   ]
 }
