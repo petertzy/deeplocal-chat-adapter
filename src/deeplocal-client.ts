@@ -18,6 +18,13 @@ interface PendingToolCall {
   arguments: string;
 }
 
+interface RequestContext {
+  response: Response;
+  signal: AbortSignal;
+  timedOut: () => boolean;
+  cleanup: () => void;
+}
+
 export class DeepLocalClient {
   private readonly controllers = new Map<string, AbortController>();
   private remoteApiKey = '';
@@ -51,8 +58,13 @@ export class DeepLocalClient {
     const config = this.configuration();
     if (config.backend === 'remote') {
       try {
-        const response = await this.request('/models', { method: 'GET' });
-        const body = await response.json() as ModelsResponse;
+        const request = await this.request('/models', { method: 'GET' });
+        let body: ModelsResponse;
+        try {
+          body = await request.response.json() as ModelsResponse;
+        } finally {
+          request.cleanup();
+        }
         const models = Array.isArray(body.data) ? body.data.filter((model) => Boolean(model?.id) && typeof model.id === 'string') : [];
         if (models.length) {
           return this.rememberModels(config.model && !models.some((model) => model.id === config.model)
@@ -64,8 +76,13 @@ export class DeepLocalClient {
       }
       return this.rememberModels(config.model ? [{ id: config.model }] : [], config);
     }
-    const response = await this.request('/models', { method: 'GET' });
-    const body = await response.json() as ModelsResponse;
+    const request = await this.request('/models', { method: 'GET' });
+    let body: ModelsResponse;
+    try {
+      body = await request.response.json() as ModelsResponse;
+    } finally {
+      request.cleanup();
+    }
     return this.rememberModels(Array.isArray(body.data) ? body.data.filter((model) => Boolean(model?.id) && typeof model.id === 'string') : [], config);
   }
 
@@ -106,17 +123,21 @@ export class DeepLocalClient {
     this.controllers.set(requestId, controller);
 
     try {
-      const response = await this.request('/chat/completions', {
+      const request = await this.request('/chat/completions', {
         method: 'POST',
         body: JSON.stringify(body),
         signal: controller.signal,
       });
 
-      if (!response.body) {
-        throw new Error('DeepLocal returned an empty response body.');
+      if (!request.response.body) {
+        try {
+          throw new Error('DeepLocal returned an empty response body.');
+        } finally {
+          request.cleanup();
+        }
       }
 
-      const reader = response.body.getReader();
+      const reader = request.response.body.getReader();
       const decoder = new TextDecoder();
       const toolBuffer = new Map<number, PendingToolCall>();
       const completion: { finishReason?: string } = {};
@@ -163,9 +184,12 @@ export class DeepLocalClient {
         if (!sawDone) {
           throw new Error(`DeepLocal stream ended unexpectedly before [DONE]; ${toolBuffer.size ? 'tool calls are incomplete and were not executed.' : 'the response may be incomplete.'}`);
         }
+      } catch (error) {
+        throw this.requestError(request, error);
       } finally {
         await reader.cancel().catch(() => undefined);
         reader.releaseLock();
+        request.cleanup();
       }
 
       if (toolBuffer.size && completion.finishReason && completion.finishReason !== 'tool_calls' && completion.finishReason !== 'stop') {
@@ -231,7 +255,19 @@ export class DeepLocalClient {
     return delta.content ? { kind: 'text', value: delta.content } : undefined;
   }
 
-  private async request(path: string, init: RequestInit): Promise<Response> {
+  private requestError(request: RequestContext, error: unknown): Error {
+    if (request.timedOut()) {
+      this.logger.warning('DeepLocal request timed out while waiting for the response or stream body.');
+      return new Error('DeepLocal request timed out while waiting for the response or stream body.');
+    }
+    if (request.signal.aborted) {
+      this.logger.info('DeepLocal request cancelled by the user.');
+      return new Error('DeepLocal request was cancelled.');
+    }
+    return error instanceof Error ? error : new Error(String(error));
+  }
+
+  private async request(path: string, init: RequestInit): Promise<RequestContext> {
     const config = this.configuration();
     const apiKey = config.backend === 'remote'
       ? (await this.remoteApiKeyProvider?.() ?? this.remoteApiKey)
@@ -241,14 +277,16 @@ export class DeepLocalClient {
     }
     const url = `${config.baseUrl}${path}`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.max(config.requestTimeout, 1000));
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(config.requestTimeout, 1000));
     const upstreamSignal = init.signal;
+    const onAbort = () => controller.abort();
 
     if (upstreamSignal) {
       if (upstreamSignal.aborted) {
         controller.abort();
       } else {
-        upstreamSignal.addEventListener('abort', () => controller.abort(), { once: true });
+        upstreamSignal.addEventListener('abort', onAbort, { once: true });
       }
     }
 
@@ -291,9 +329,21 @@ export class DeepLocalClient {
         throw new Error(`${backend} request failed: ${detail}`);
       }
 
-      return response;
-    } finally {
-      clearTimeout(timeout);
+      return {
+        response,
+        signal: controller.signal,
+        timedOut: () => timedOut,
+        cleanup: () => {
+          clearTimeout(timeout);
+          upstreamSignal?.removeEventListener('abort', onAbort);
+        },
+      };
+    } catch (error) {
+      const context = { response: undefined as never, signal: controller.signal, timedOut: () => timedOut, cleanup: () => {
+        clearTimeout(timeout);
+        upstreamSignal?.removeEventListener('abort', onAbort);
+      } };
+      throw this.requestError(context, error);
     }
   }
 }
