@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DeepLocalClient } from '../../src/deeplocal-client';
 import { DeepLocalConfig } from '../../src/config';
-import { ChatCompletionRequest } from '../../src/protocol';
+import { ChatCompletionRequest, StreamEvent } from '../../src/protocol';
 import { startFakeServer, FakeServer } from './fake-server';
 
 const config = (baseUrl: string, requestTimeout = 1000): DeepLocalConfig => ({
@@ -35,13 +35,50 @@ describe('DeepLocalClient', () => {
       res.end(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"a"}' } }] } }] })}\n\ndata: [DONE]\n\n`);
     });
     const client = new DeepLocalClient(logger, () => config(server!.baseUrl));
-    const events = [];
+    const events: StreamEvent[] = [];
     for await (const event of client.streamChat('request', request)) events.push(event);
     expect(events).toEqual([
       { kind: 'text', value: 'hi' },
       { kind: 'toolCall', value: { id: 'call-1', type: 'function', function: { name: 'read', arguments: '{"file":"a"}' } } },
     ]);
     expect(JSON.parse(server.requests[0].body!)).toEqual(request);
+  });
+
+  it('parses a final event without a trailing newline', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.end('data: {"choices":[{"delta":{"content":"final"}}]}\ndata: [DONE]');
+    });
+    const client = new DeepLocalClient(logger, () => config(server!.baseUrl));
+    const events: StreamEvent[] = [];
+    for await (const event of client.streamChat('final-event', request)) events.push(event);
+    expect(events).toEqual([{ kind: 'text', value: 'final' }]);
+  });
+
+  it('preserves streamed text and reports an unexpected EOF', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.end('data: {"choices":[{"delta":{"content":"partial"}}]}\n\ndata: {"choices":[{"delta":{"content":"unfinished"');
+    });
+    const client = new DeepLocalClient(logger, () => config(server!.baseUrl));
+    const events: StreamEvent[] = [];
+    await expect(async () => {
+      for await (const event of client.streamChat('truncated', request)) events.push(event);
+    }).rejects.toThrow('ended unexpectedly');
+    expect(events).toEqual([{ kind: 'text', value: 'partial' }]);
+  });
+
+  it('rejects malformed JSON without discarding earlier output', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.end('data: {"choices":[{"delta":{"content":"before"}}]}\n\ndata: {not-json}\n\ndata: [DONE]\n\n');
+    });
+    const client = new DeepLocalClient(logger, () => config(server!.baseUrl));
+    const events: StreamEvent[] = [];
+    await expect(async () => {
+      for await (const event of client.streamChat('malformed', request)) events.push(event);
+    }).rejects.toThrow('malformed JSON');
+    expect(events).toEqual([{ kind: 'text', value: 'before' }]);
   });
 
   it('reports server errors with status and body', async () => {

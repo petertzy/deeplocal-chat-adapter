@@ -86,6 +86,7 @@ export class DeepLocalClient {
       const decoder = new TextDecoder();
       const toolBuffer = new Map<number, PendingToolCall>();
       let bufferedText = '';
+      let sawDone = false;
 
       try {
         while (true) {
@@ -99,13 +100,36 @@ export class DeepLocalClient {
           bufferedText = lines.pop() ?? '';
 
           for (const line of lines) {
+            if (this.isDoneLine(line)) {
+              sawDone = true;
+              continue;
+            }
             const event = this.readStreamLine(line, toolBuffer);
             if (event) {
               yield event;
             }
           }
         }
+
+        // A provider may close immediately after the final SSE line. SSE does
+        // not require that line to end in a newline, so process it after the
+        // reader reports EOF. TextDecoder() flushes a split UTF-8 sequence.
+        bufferedText += decoder.decode();
+        if (bufferedText.trim()) {
+          if (this.isDoneLine(bufferedText)) {
+            sawDone = true;
+          } else {
+            const event = this.readStreamLine(bufferedText, toolBuffer);
+            if (event) {
+              yield event;
+            }
+          }
+        }
+        if (!sawDone) {
+          throw new Error('DeepLocal stream ended unexpectedly before [DONE]; the response may be incomplete.');
+        }
       } finally {
+        await reader.cancel().catch(() => undefined);
         reader.releaseLock();
       }
 
@@ -115,6 +139,10 @@ export class DeepLocalClient {
     } finally {
       this.controllers.delete(requestId);
     }
+  }
+
+  private isDoneLine(line: string): boolean {
+    return line.trim() === 'data: [DONE]';
   }
 
   private readStreamLine(line: string, toolBuffer: Map<number, PendingToolCall>): StreamEvent | undefined {
@@ -132,8 +160,7 @@ export class DeepLocalClient {
     try {
       chunk = JSON.parse(data) as ChatCompletionChunk;
     } catch (error) {
-      this.logger.warning(`Ignored malformed DeepLocal stream event: ${messageOf(error)}`);
-      return undefined;
+      throw new Error(`DeepLocal stream contained malformed JSON: ${messageOf(error)}`);
     }
 
     const delta = chunk.choices?.[0]?.delta;
