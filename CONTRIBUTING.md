@@ -45,7 +45,14 @@ Run `npm run watch` in one terminal for continuous bundle and type checking. Run
 
 - `npm test` runs fast unit tests in Node, without VS Code or a DeepLocal service.
 - `npm run check` runs type checking, lint, and unit tests.
+- `npm run test:webview` runs the real-browser sidebar tests (no API key or model requests).
 - `npm run test:integration` compiles the extension and launches an isolated VS Code Extension Host against a local fake OpenAI-compatible server.
+
+For webview tests, run `npx playwright install chromium` once, then
+`npm run test:webview`. Alternatively, with Google Chrome already installed,
+run `PLAYWRIGHT_CHANNEL=chrome npm run test:webview`. The tests exercise narrow
+layouts, themes, code folding, approvals, model persistence, cancellation, and
+IME input. Screenshots are saved under the ignored `test-results/` directory.
 
 For interactive manual testing, select **Run deeplocal-chat-adapter (Extension Development Host)** in VS Code's **Run and Debug** panel and choose **Start Debugging**. The same configuration is available with **Command Palette → Debug: Start Debugging**. It compiles the current source and opens a separate Extension Development Host with an isolated profile. This launch runs without an attached debugger, so it does not pause the extension host while waiting for a debugger connection. To use breakpoints, select **Debug deeplocal-chat-adapter (Extension Development Host)** instead.
 
@@ -55,7 +62,11 @@ After launching the development host, start DeepLocal if you want to test live m
 
 ## Opening The Right Sidebar
 
-Run `deeplocal-chat-adapter: Open` from the Command Palette to open the chat view in VS Code's Secondary Side Bar.
+Run `deeplocal-chat-adapter: Open` from the Command Palette to reveal the chat view.
+On a fresh install it is registered in the Activity Bar using VS Code's stable
+extension API. For a right-side layout, right-click the DeepLocal view title and
+choose **Move View → Secondary Side Bar**. VS Code remembers this placement;
+the Open command respects it rather than forcibly moving other views.
 
 If the right sidebar is hidden, run this command from the Command Palette:
 

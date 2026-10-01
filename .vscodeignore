@@ -14,3 +14,7 @@ test/**
 vitest.config.ts
 .vscode-test.mjs
 .eslintrc.json
+playwright.config.ts
+test-results/**
+playwright-report/**
+docs/**

@@ -11,6 +11,7 @@ export interface AgentToolResult {
   callId: string;
   name: string;
   content: string;
+  status: 'success' | 'error' | 'declined';
 }
 
 export interface AgentToolOptions {
@@ -20,6 +21,14 @@ export interface AgentToolOptions {
 
 export function getAgentTools(): ChatTool[] {
   return [
+    {
+      type: 'function',
+      function: {
+        name: 'delete_file',
+        description: 'Move a single workspace file to the trash ONLY when the user explicitly asks to delete it. Requires approval and supports a deletion diff. Never deletes directories.',
+        parameters: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } },
+      },
+    },
     {
       type: 'function',
       function: {
@@ -198,15 +207,17 @@ export async function invokeAgentTool(callId: string, name: string, rawArguments
         return result(callId, name, await writeFile(args, options));
       case 'create_file':
         return result(callId, name, await writeFile(args, options, true));
+      case 'delete_file':
+        return result(callId, name, await deleteFile(args, options));
       case 'replace_in_file':
         return result(callId, name, await replaceInFile(args, options));
       case 'run_command':
         return result(callId, name, await runCommand(args, options));
       default:
-        return result(callId, name, `Unknown tool: ${name}`);
+        return result(callId, name, `Unknown tool: ${name}`, 'error');
     }
   } catch (error) {
-    return result(callId, name, `Tool error: ${messageOf(error)}`);
+    return result(callId, name, `Tool error: ${messageOf(error)}`, 'error');
   }
 }
 
@@ -400,11 +411,40 @@ async function replaceInFile(args: Record<string, unknown>, options: AgentToolOp
   const document = await vscode.workspace.openTextDocument(uri);
   const original = document.getText();
   if (!original.includes(oldText)) {
-    return 'oldText was not found; no changes applied.';
+    throw new Error('oldText was not found; no changes applied.');
   }
 
   if (original.indexOf(oldText) !== original.lastIndexOf(oldText)) throw new Error('oldText matches multiple locations; provide more context.');
   return applyFileChange(uri, document, original.replace(oldText, newText), options);
+}
+
+async function deleteFile(args: Record<string, unknown>, options: AgentToolOptions): Promise<string> {
+  const uri = resolveWorkspacePath(args.path);
+  const stat = await vscode.workspace.fs.stat(uri);
+  if (stat.type & vscode.FileType.Directory) throw new Error('delete_file only supports individual files, not directories.');
+  const document = await vscode.workspace.openTextDocument(uri);
+  if (document.isDirty) throw new Error('File has unsaved changes. Save or discard them before requesting deletion.');
+  const version = document.version;
+  const label = vscode.workspace.asRelativePath(uri);
+  const scheme = `deeplocal-delete-${Math.random().toString(36).slice(2)}`;
+  const before = vscode.Uri.parse(`${scheme}:/before/${encodeURIComponent(label)}`);
+  const after = vscode.Uri.parse(`${scheme}:/after/${encodeURIComponent(label)}`);
+  const original = document.getText();
+  const provider = vscode.workspace.registerTextDocumentContentProvider(scheme, {
+    provideTextDocumentContent: target => target.toString() === before.toString() ? original : '',
+  });
+  try {
+    const message = `Delete ${label} (move to trash)`;
+    const preview = async () => { await vscode.commands.executeCommand('vscode.diff', before, after, `Delete ${label}`, { preview: true }); };
+    const approved = options.approve ? await options.approve(message, preview) : await confirm(message);
+    options.signal?.throwIfAborted();
+    if (!approved) return 'User declined file deletion. Do not retry without new instructions.';
+    if (document.version !== version || document.isDirty) throw new Error('File changed during review; request deletion again after reviewing it.');
+    await vscode.workspace.fs.delete(uri, { recursive: false, useTrash: true });
+    return `Moved ${label} to the trash.`;
+  } finally {
+    provider.dispose();
+  }
 }
 
 async function applyFileChange(uri: vscode.Uri, document: vscode.TextDocument | undefined, content: string, options: AgentToolOptions): Promise<string> {
@@ -466,8 +506,8 @@ async function runCommand(args: Record<string, unknown>, options: AgentToolOptio
   return truncate([stdout, stderr].filter(Boolean).join('\n'), 30000) || '(command completed with no output)';
 }
 
-function result(callId: string, name: string, content: string): AgentToolResult {
-  return { callId, name, content };
+function result(callId: string, name: string, content: string, status: AgentToolResult['status'] = 'success'): AgentToolResult {
+  return { callId, name, content, status: content.startsWith('User declined ') ? 'declined' : status };
 }
 
 function positiveNumber(value: unknown, fallback: number): number {

@@ -50,5 +50,8 @@ suite('deeplocal-chat-adapter Extension Host', () => {
     assert.ok(models.some((model) => model.id === 'integration-model'), 'language model provider should expose discovered models');
     assert.ok(extension.packageJSON.contributes.views['deeplocal-chat-adapter-sidebar']
       .some((view) => view.id === 'deeplocal-chat-adapter.view'), 'webview view should be contributed');
+    assert.ok(extension.packageJSON.contributes.viewsContainers.activitybar
+      .some((container) => container.id === 'deeplocal-chat-adapter-sidebar'), 'container must use a stable contribution point');
+    await vscode.commands.executeCommand('deeplocal-chat-adapter.open');
   });
 });

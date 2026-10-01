@@ -4,4 +4,6 @@ out/
 *.vsix
 .vscode-test/
 .env
+test-results/
+playwright-report/
 docs/

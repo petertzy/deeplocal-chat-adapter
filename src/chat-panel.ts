@@ -4,6 +4,8 @@ import { getConfig } from './config';
 import { DeepLocalClient } from './deeplocal-client';
 import { Logger } from './logger';
 import { ChatMessage, ToolCall } from './protocol';
+import { renderChatHtml } from './chat-webview';
+import { toolActivity, ToolActivity } from './tool-activity';
 
 interface WebviewMessage {
   type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey';
@@ -18,6 +20,7 @@ interface WebviewMessage {
 interface PersistedChatItem {
   role: 'You' | 'DeepLocal' | 'Tool';
   text: string;
+  activity?: ToolActivity;
 }
 
 interface ChatSession {
@@ -78,7 +81,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     view.webview.options = {
       enableScripts: true,
     };
-    view.webview.html = renderHtml(view.webview);
+    view.webview.html = renderChatHtml(view.webview);
     view.onDidDispose(() => {
       this.stopTask();
       this.view = undefined;
@@ -209,6 +212,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     const session = this.activeSession();
     const assistantItem: PersistedChatItem = { role: 'DeepLocal', text: '' };
     let answer = '';
+    let outcome: 'success' | 'error' | 'cancelled' = 'success';
     try {
       session.history.push({ role: 'user', content: userMessage });
       session.transcript.push({ role: 'You', text });
@@ -234,6 +238,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
             'Inspect the workspace before changing files. Paths are relative to the workspace root.',
             'When asked to create a new file, use create_file with an appropriate new path. Never replace the active file merely because it is open.',
             'Read existing files before editing. Use replace_in_file for targeted changes; write_file for intentional full replacements.',
+            'Use delete_file only when the user explicitly requests deletion; it moves a single file to the trash after approval. Never delete files as an incidental cleanup step.',
             'Use get_active_file and get_selection before editing the active editor when relevant.',
             'Use get_diagnostics after edits when the user asks you to fix errors.',
             'Prefer small targeted edits. Explain what changed after tools finish.',
@@ -258,11 +263,15 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
       session.history.push({ role: 'assistant', content: answer });
       assistantItem.text = answer;
+      // Keep the final summary after the actions in both live and restored views.
+      session.transcript = session.transcript.filter((item) => item !== assistantItem);
+      session.transcript.push(assistantItem);
       this.post({ type: 'assistantFinal', text: answer });
       session.updatedAt = Date.now();
       await this.persist();
       this.postSessions();
     } catch (error) {
+      outcome = controller.signal.aborted ? 'cancelled' : 'error';
       if (controller.signal.aborted) {
         this.post({ type: 'notice', message: 'Task stopped. Already applied changes are retained.' });
       } else {
@@ -276,7 +285,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     } finally {
       this.activeRequestId = undefined;
       this.taskController = undefined;
-      this.post({ type: 'assistantDone' });
+      this.post({ type: 'assistantDone', outcome });
     }
   }
 
@@ -352,18 +361,24 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       const results = [];
       for (const call of toolCalls) {
         if (signal.aborted) {
-          results.push({ callId: call.id, name: call.function.name, content: 'Task stopped; tool was not executed.' });
+          results.push({ callId: call.id, name: call.function.name, content: 'Task stopped; tool was not executed.', status: 'error' as const });
           continue;
         }
-        this.post({ type: 'status', message: `Running ${call.function.name}…` });
+        const activity = toolActivity(`${requestId}:${turn}:${call.id}`, call);
+        this.post({ type: 'status', message: `${activity.title}${activity.detail ? ` · ${activity.detail}` : ''}` });
+        this.post({ type: 'toolStart', activity });
         const result = await invokeAgentTool(call.id, call.function.name, call.function.arguments, {
           signal,
           approve: (message, preview) => this.requestApproval(message, signal, preview),
         });
         results.push(result);
+        activity.state = signal.aborted ? 'cancelled' : result.status;
+        if (call.function.name === 'write_file' && result.status === 'success') {
+          activity.title = result.content.startsWith('Created ') ? 'Create file' : 'Modify file';
+        }
         const text = `${call.function.name}\n${result.content}`;
-        session.transcript.push({ role: 'Tool', text });
-        this.post({ type: 'toolResult', text });
+        session.transcript.push({ role: 'Tool', text, activity });
+        this.post({ type: 'toolResult', text, activity });
         await this.persist();
       }
       workingMessages.push(...toolResultsToMessages(results));
@@ -389,7 +404,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       const finish = (approved: boolean) => {
         signal.removeEventListener('abort', onAbort);
         this.pendingApproval = undefined;
-        this.post({ type: 'approvalDone', approvalId: id });
+        this.post({ type: 'approvalDone', approvalId: id, approved });
         resolve(approved);
       };
       const onAbort = () => finish(false);
@@ -598,365 +613,6 @@ function summarizeUserMessage(content: string | null | undefined): string {
 
   const firstLine = content.split(/\r?\n/).find((line) => line.trim());
   return firstLine?.trim() ?? '';
-}
-
-function renderHtml(webview: vscode.Webview): string {
-  const nonce = Math.random().toString(36).slice(2);
-
-  return /* html */ `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DeepLocal</title>
-  <style>
-    body {
-      margin: 0;
-      font-family: var(--vscode-font-family);
-      color: var(--vscode-foreground);
-      background: var(--vscode-editor-background);
-    }
-    .shell {
-      display: grid;
-      grid-template-rows: minmax(0, 1fr) auto;
-      height: 100vh;
-    }
-    select, textarea, button {
-      font: inherit;
-    }
-    select, textarea {
-      color: var(--vscode-input-foreground);
-      background: var(--vscode-input-background);
-      border: 1px solid var(--vscode-input-border);
-    }
-    select {
-      width: 100%;
-      height: 30px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    button {
-      color: var(--vscode-button-foreground);
-      background: var(--vscode-button-background);
-      border: 0;
-      padding: 7px 10px;
-      cursor: pointer;
-    }
-    button:disabled {
-      opacity: 0.6;
-      cursor: default;
-    }
-    main {
-      overflow: auto;
-      padding: 10px;
-    }
-    .message {
-      white-space: pre-wrap;
-      line-height: 1.45;
-      margin: 0 0 8px;
-      padding: 8px;
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 6px;
-    }
-    .role {
-      font-size: 11px;
-      text-transform: uppercase;
-      opacity: 0.7;
-      margin-bottom: 6px;
-    }
-    footer {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 6px;
-      padding: 8px;
-      border-top: 1px solid var(--vscode-panel-border);
-    }
-    .controls {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 6px;
-    }
-    .session-row {
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      gap: 6px;
-    }
-    .backend-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      font-size: 12px;
-      opacity: 0.9;
-    }
-    .actions {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 6px;
-    }
-    .options {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 4px;
-    }
-    label.option {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      opacity: 0.9;
-      user-select: none;
-    }
-    textarea {
-      min-height: 64px;
-      resize: vertical;
-      padding: 8px;
-    }
-    .error {
-      color: var(--vscode-errorForeground);
-    }
-    #status { font-size: 12px; color: var(--vscode-descriptionForeground); }
-    .tool { white-space: normal; }
-    .tool pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
-    .approval { border-color: var(--vscode-focusBorder); }
-    .approval button { margin: 8px 6px 0 0; }
-    [hidden] { display: none !important; }
-    summary { cursor: pointer; }
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <main id="messages" aria-label="Conversation"></main>
-    <footer>
-      <div class="session-row">
-        <select id="session"></select>
-        <button id="newSession">New</button>
-        <button id="deleteSession">Delete</button>
-      </div>
-      <div class="backend-row">
-        <span id="backendLabel">Backend: Local DeepLocal</span>
-        <button id="backendButton">Change</button>
-      </div>
-      <div class="backend-row" id="remoteKeyRow" hidden>
-        <span id="remoteKeyStatus">Remote API key not set</span>
-        <button id="setRemoteKeyButton">Set API key</button>
-        <button id="clearRemoteKeyButton">Clear</button>
-      </div>
-      <div id="status" role="status" aria-live="polite">Ready · Agent can inspect, create and edit workspace files.</div>
-      <textarea id="prompt" aria-label="Task" placeholder="Describe a task, e.g. Create snake.html with a playable snake game…"></textarea>
-      <div class="controls">
-        <select id="model"></select>
-        <button id="refresh">Refresh</button>
-      </div>
-      <div class="actions">
-        <button id="restoreSession">Reload</button>
-        <button id="send">Send</button>
-        <button id="stop" hidden>Stop</button>
-      </div>
-      <div class="options">
-        <label class="option">
-          <input id="useAgent" type="checkbox" checked>
-          <span>Agent mode · inspect → review → apply → verify</span>
-        </label>
-        <small>Turn off for chat only. File changes and commands require approval below.</small>
-      </div>
-    </footer>
-  </div>
-  <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    const model = document.getElementById('model');
-    const session = document.getElementById('session');
-    const refresh = document.getElementById('refresh');
-    const messages = document.getElementById('messages');
-    const prompt = document.getElementById('prompt');
-    const send = document.getElementById('send');
-    const newSession = document.getElementById('newSession');
-    const deleteSession = document.getElementById('deleteSession');
-    const restoreSession = document.getElementById('restoreSession');
-    const backendButton = document.getElementById('backendButton');
-    const backendLabel = document.getElementById('backendLabel');
-    const remoteKeyRow = document.getElementById('remoteKeyRow');
-    const remoteKeyStatus = document.getElementById('remoteKeyStatus');
-    const setRemoteKeyButton = document.getElementById('setRemoteKeyButton');
-    const clearRemoteKeyButton = document.getElementById('clearRemoteKeyButton');
-    const useAgent = document.getElementById('useAgent');
-    const stop = document.getElementById('stop');
-    const status = document.getElementById('status');
-    const approvals = new Map();
-    let busy = false;
-    let currentAssistant;
-    let activeSessionId;
-    let pendingPrompt;
-    const drafts = new Map();
-
-    function setBusy(value) {
-      busy = value;
-      for (const control of [send, session, newSession, deleteSession, restoreSession, backendButton, refresh, model, useAgent, setRemoteKeyButton, clearRemoteKeyButton]) control.disabled = value;
-      stop.hidden = !value;
-      status.textContent = value ? 'Working…' : 'Ready';
-    }
-
-    function addTool(text) {
-      const item = document.createElement('details');
-      item.className = 'message tool';
-      const title = document.createElement('summary');
-      const lines = text.split('\\n');
-      title.textContent = lines[0] + (lines[1] ? ' · ' + lines[1].slice(0, 160) : '');
-      const output = document.createElement('pre');
-      output.textContent = text.substring(text.indexOf('\\n') + 1);
-      item.append(title, output);
-      messages.append(item);
-      messages.scrollTop = messages.scrollHeight;
-    }
-
-    function addMessage(role, text, className) {
-      const item = document.createElement('section');
-      item.className = 'message' + (className ? ' ' + className : '');
-      const label = document.createElement('div');
-      label.className = 'role';
-      label.textContent = role;
-      const body = document.createElement('div');
-      body.textContent = text;
-      item.append(label, body);
-      messages.append(item);
-      messages.scrollTop = messages.scrollHeight;
-      return body;
-    }
-
-    window.addEventListener('message', (event) => {
-      const msg = event.data;
-      if (msg.type === 'models') {
-        const remote = msg.backend === 'remote';
-        document.title = remote ? 'Remote OpenAI-compatible API' : 'Local DeepLocal';
-        backendLabel.textContent = remote ? 'Backend: Remote OpenAI-compatible API' : 'Backend: Local DeepLocal';
-        remoteKeyRow.hidden = !remote;
-        remoteKeyStatus.textContent = msg.hasApiKey ? 'Remote API key is set' : 'Remote API key not set';
-        setRemoteKeyButton.textContent = msg.hasApiKey ? 'Update API key' : 'Set API key';
-        model.setAttribute('aria-label', remote ? 'Remote API model' : 'DeepLocal model');
-        model.replaceChildren(...msg.models.map((id) => {
-          const option = document.createElement('option');
-          option.value = id;
-          option.textContent = id;
-          return option;
-        }));
-      }
-      if (msg.type === 'sessions') {
-        if (activeSessionId && activeSessionId !== msg.activeSessionId) {
-          drafts.set(activeSessionId, prompt.value);
-        }
-        activeSessionId = msg.activeSessionId;
-        session.replaceChildren(...msg.sessions.map((item) => {
-          const option = document.createElement('option');
-          option.value = item.id;
-          option.textContent = item.title;
-          option.selected = item.id === msg.activeSessionId;
-          return option;
-        }));
-        if (!pendingPrompt) {
-          prompt.value = drafts.get(activeSessionId) || '';
-        }
-      }
-      if (msg.type === 'restore') {
-        messages.replaceChildren();
-        for (const item of msg.items) {
-          if (item.role === 'Tool') addTool(item.text);
-          else addMessage(item.role, item.text);
-        }
-      }
-      if (msg.type === 'status') status.textContent = msg.message;
-      if (msg.type === 'toolResult') addTool(msg.text);
-      if (msg.type === 'approval') {
-        status.textContent = 'Waiting for your approval';
-        const body = addMessage('Review action', msg.message, 'approval');
-        approvals.set(msg.approvalId, body);
-        const actions = msg.hasPreview ? ['Preview diff', 'Approve', 'Reject'] : ['Approve', 'Reject'];
-        for (const action of actions) {
-          const button = document.createElement('button');
-          button.textContent = action;
-          button.addEventListener('click', () => {
-            const preview = action === 'Preview diff';
-            vscode.postMessage({ type: preview ? 'preview' : 'approval', approvalId: msg.approvalId, approved: action === 'Approve' });
-            if (!preview) for (const element of body.querySelectorAll('button')) element.disabled = true;
-          });
-          body.append(button);
-        }
-        messages.scrollTop = messages.scrollHeight;
-      }
-      if (msg.type === 'approvalDone') {
-        const body = approvals.get(msg.approvalId);
-        if (body) body.parentElement.remove();
-        approvals.delete(msg.approvalId);
-      }
-      if (msg.type === 'assistantStart') {
-        currentAssistant = addMessage('DeepLocal', '');
-        setBusy(true);
-      }
-      if (msg.type === 'assistantFinal' && currentAssistant) currentAssistant.textContent = msg.text;
-      if (msg.type === 'assistantDelta' && currentAssistant) {
-        currentAssistant.textContent += msg.text;
-        messages.scrollTop = messages.scrollHeight;
-      }
-      if (msg.type === 'assistantDone') {
-        if (pendingPrompt !== undefined && prompt.value.trim() === pendingPrompt) {
-          prompt.value = '';
-          drafts.delete(activeSessionId);
-        }
-        pendingPrompt = undefined;
-        setBusy(false);
-        currentAssistant = undefined;
-      }
-      if (msg.type === 'error') {
-        addMessage('Error', msg.message, 'error');
-        // Keep the submitted text in the composer so it can be edited or
-        // retried. The prompt is only consumed after a successful response.
-        pendingPrompt = undefined;
-      }
-      if (msg.type === 'notice') {
-        addMessage('DeepLocal', msg.message);
-      }
-    });
-
-    send.addEventListener('click', () => {
-      const text = prompt.value.trim();
-      if (busy || !text || !model.value) {
-        return;
-      }
-      setBusy(true);
-      addMessage('You', text);
-      drafts.set(activeSessionId, prompt.value);
-      pendingPrompt = text;
-      vscode.postMessage({
-        type: 'send',
-        text,
-        model: model.value,
-        useAgent: useAgent.checked,
-      });
-    });
-    stop.addEventListener('click', () => {
-      status.textContent = 'Stopping…';
-      vscode.postMessage({ type: 'stop' });
-    });
-
-    prompt.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        send.click();
-      }
-    });
-
-    refresh.addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
-    backendButton.addEventListener('click', () => vscode.postMessage({ type: 'setBackend' }));
-    setRemoteKeyButton.addEventListener('click', () => vscode.postMessage({ type: 'setRemoteApiKey' }));
-    clearRemoteKeyButton.addEventListener('click', () => vscode.postMessage({ type: 'clearRemoteApiKey' }));
-    newSession.addEventListener('click', () => vscode.postMessage({ type: 'newSession' }));
-    deleteSession.addEventListener('click', () => vscode.postMessage({ type: 'deleteSession', sessionId: session.value }));
-    restoreSession.addEventListener('click', () => vscode.postMessage({ type: 'switchSession', sessionId: session.value }));
-    session.addEventListener('change', () => vscode.postMessage({ type: 'switchSession', sessionId: session.value }));
-    vscode.postMessage({ type: 'ready' });
-  </script>
-</body>
-</html>`;
 }
 
 function messageOf(error: unknown): string {

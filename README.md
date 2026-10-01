@@ -9,7 +9,7 @@
 ## Features
 
 - Use DeepLocal models from VS Code.
-- Chat in the DeepLocal Secondary Side Bar view.
+- Chat in the DeepLocal view; move it to the Secondary Side Bar for a right-side layout.
 - Create and edit files by path in the default Agent mode, with inline approval and diff previews.
 - Let capable models inspect files, search the workspace, read diagnostics, and propose confirmed edits.
 - Restore recent chat sessions after reloading VS Code.
@@ -22,16 +22,32 @@ with a playable snake game.” The agent inspects the workspace and calls
 `create_file`; it no longer rewrites the request as an edit to the active editor.
 `create_file` refuses to overwrite an existing file.
 
-File changes appear as sidebar approval cards with the target path. Use
+The Open command respects your saved view placement. On a fresh installation,
+right-click the DeepLocal view title and choose **Move View → Secondary Side Bar**
+if you prefer the right side. No proposed VS Code APIs are required.
+
+The sidebar keeps task history and connection/API-key settings in panels opened
+from the top toolbar. The bottom composer contains Agent/Chat mode, model
+selection, and Send/Stop. Model selection and drafts survive webview recreation.
+The conversation shows action cards with the operation, target path, and
+working/done/failed/declined status. Long responses and code blocks are collapsed
+by default, including during streaming; expand them when needed. Reading older
+messages does not force-scroll back to the latest output.
+
+File changes appear in a review card pinned above the composer. Use
 **Preview diff**, then **Approve** or **Reject**. Approved changes are saved and
 opened in the editor; command execution also requires approval. Tool results
 are expandable and retained in the conversation. Existing unsaved edits and
 files changed during review are protected. The agent uses results to continue
 working and reports when it reaches its step limit rather than claiming success.
+Create, modify, and delete are distinct actions. `delete_file` is reserved for an
+explicit deletion request, requires approval, shows a deletion diff, and moves
+one file to the trash. Directories and unsaved documents are rejected; an
+unsupported trash operation is reported as an error, without a permanent-delete fallback.
 
 **Stop** cancels the current request, pending approval, and a running command;
 already applied changes remain. Session switching is disabled while working.
-Turn off Agent mode for discussion without tools. This workflow follows
+Choose Chat mode for discussion without tools. This workflow follows
 [Cline's file review and tool execution approach](https://github.com/cline/cline#edits-code-across-your-project);
 it does not include Cline's checkpoints, browser automation, or background terminals.
 HTML files open in the editor; open the saved file in a browser to play the game.
@@ -154,7 +170,7 @@ Remote API requests may incur provider charges. Use **deeplocal-chat-adapter: Te
    deeplocal-chat-adapter: Open
    ```
 
-The chat view opens in VS Code's Secondary Side Bar, which is the right sidebar. If the right sidebar is hidden:
+The chat view opens at its saved location. To use VS Code's Secondary Side Bar (the right sidebar), move the DeepLocal view there. If the right sidebar is hidden:
 
 1. Open the Command Palette:
 

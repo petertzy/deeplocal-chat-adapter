@@ -42,10 +42,10 @@
       }
     ],
     "viewsContainers": {
-      "secondarySideBar": [
+      "activitybar": [
         {
           "id": "deeplocal-chat-adapter-sidebar",
-          "title": "deeplocal-chat-adapter",
+          "title": "DeepLocal",
           "icon": "resources/deeplocal.svg"
         }
       ]
@@ -174,10 +174,12 @@
     "lint": "eslint . --ext .ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:webview": "playwright test",
     "check": "npm run check-types && npm run lint && npm test",
     "test:integration": "npm run compile && vscode-test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.3.0",
     "@types/vscode": "^1.104.0",
     "@typescript-eslint/eslint-plugin": "^8.71.0",

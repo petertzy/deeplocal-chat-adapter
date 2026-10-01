@@ -114,15 +114,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('deeplocal-chat-adapter.openSettings', async () => {
       await vscode.commands.executeCommand('workbench.action.openSettings', 'deeplocal');
     }),
-    vscode.commands.registerCommand('deeplocal-chat-adapter.open', () => {
-      void vscode.commands.executeCommand('workbench.view.extension.deeplocal-chat-adapter-sidebar');
-      void vscode.commands.executeCommand('deeplocal-chat-adapter.view.focus');
-      void vscode.commands.executeCommand('workbench.action.moveViewToAuxiliaryBar');
+    vscode.commands.registerCommand('deeplocal-chat-adapter.open', async () => {
+      // Focusing the view reveals its current container, including a user-moved
+      // secondary sidebar, without relying on proposed APIs or private commands.
+      await vscode.commands.executeCommand('deeplocal-chat-adapter.view.focus');
     }),
     vscode.commands.registerCommand('deeplocal-chat-adapter.newSession', async () => {
       await chatPanel?.newSession();
-      void vscode.commands.executeCommand('workbench.view.extension.deeplocal-chat-adapter-sidebar');
-      void vscode.commands.executeCommand('deeplocal-chat-adapter.view.focus');
+      await vscode.commands.executeCommand('deeplocal-chat-adapter.view.focus');
     }),
   );
 

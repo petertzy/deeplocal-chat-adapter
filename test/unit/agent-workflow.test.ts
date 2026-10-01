@@ -4,10 +4,11 @@ import * as path from 'node:path';
 import { ChatPanel } from '../../src/chat-panel';
 import { invokeAgentTool } from '../../src/agent-tools';
 import { ChatCompletionRequest, StreamEvent } from '../../src/protocol';
+import { toolActivity } from '../../src/tool-activity';
 
 const env = vi.hoisted(() => ({
   files: new Map<string, string>(), dirty: false, version: 1,
-  apply: vi.fn(), show: vi.fn(), dispose: vi.fn(), command: vi.fn(),
+  apply: vi.fn(), show: vi.fn(), dispose: vi.fn(), command: vi.fn(), trash: vi.fn(),
   config: { injectSystemPrompt: true, agentMaxTurns: 3, maxOutputTokens: 1000, backend: 'local' },
 }));
 
@@ -21,6 +22,7 @@ vi.mock('vscode', () => {
     replace(target: { fsPath: string }, _range: unknown, text: string) { this.operations.push({ kind: 'write', target, text }); }
   }
   return {
+    FileType: { File: 1, Directory: 2 },
     Uri: { parse: uri, joinPath: (root: { fsPath: string }, relative: string) => uri(path.resolve(root.fsPath, relative)) },
     WorkspaceEdit, Position: class {}, Range: class {},
     window: { showTextDocument: env.show, showWarningMessage: vi.fn(), activeTextEditor: {
@@ -33,7 +35,10 @@ vi.mock('vscode', () => {
       registerTextDocumentContentProvider: () => ({ dispose: env.dispose }),
       fs: { stat: async (target: { fsPath: string }) => {
         if (!env.files.has(target.fsPath)) throw Object.assign(new Error('not found'), { code: 'FileNotFound' });
-        return {};
+        return { type: target.fsPath.endsWith('/folder') ? 2 : 1 };
+      }, delete: async (target: { fsPath: string }, options: unknown) => {
+        env.trash(target.fsPath, options);
+        env.files.delete(target.fsPath);
       } },
       openTextDocument: async (target: { fsPath: string }) => ({
         uri: target, get isDirty() { return env.dirty; }, get version() { return env.version; },
@@ -113,6 +118,29 @@ it('rejects files changed during review and a newly created path collision', asy
   } });
   expect(collision.content).toContain('could not apply');
   expect(env.files.get('/project/snake.html')).toBe('user created this');
+});
+
+it('requires approval for deletion, rejects directories, and uses trash rather than permanent removal', async () => {
+  const args = JSON.stringify({ path: 'existing.ts' });
+  expect((await invokeAgentTool('d1', 'delete_file', args, { approve: async () => false })).status).toBe('declined');
+  expect(env.files.has('/project/existing.ts')).toBe(true);
+  const controller = new AbortController();
+  await invokeAgentTool('d2', 'delete_file', args, { signal: controller.signal, approve: async () => { controller.abort(); return true; } });
+  expect(env.trash).not.toHaveBeenCalled();
+  env.files.set('/project/folder', '');
+  expect((await invokeAgentTool('d3', 'delete_file', '{"path":"folder"}')).status).toBe('error');
+  const result = await invokeAgentTool('d4', 'delete_file', args, { approve: async (_message, preview) => { await preview?.(); return true; } });
+  expect(result.status).toBe('success');
+  expect(env.trash).toHaveBeenCalledWith('/project/existing.ts', { recursive: false, useTrash: true });
+  expect(env.command.mock.calls[0][3]).toBe('Delete existing.ts');
+});
+
+it('tool progress identifies operation and path without exposing generated contents', () => {
+  for (const [name, title] of [['create_file', 'Create file'], ['replace_in_file', 'Modify file'], ['delete_file', 'Delete file']]) {
+    const activity = toolActivity('request:1', { id: 'c1', type: 'function', function: { name, arguments: JSON.stringify({ path: 'snake.html', content: 'huge source code' }) } });
+    expect(activity).toMatchObject({ title, detail: 'snake.html', state: 'running' });
+    expect(JSON.stringify(activity)).not.toContain('huge source code');
+  }
 });
 
 function panelHarness(responses: StreamEvent[][]) {
