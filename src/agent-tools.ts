@@ -3,6 +3,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { ChatMessage, ChatTool } from './protocol';
+import { parseToolInput } from './tool-input';
 
 const execFileAsync = promisify(execFile);
 
@@ -158,9 +159,8 @@ export function getAgentTools(): ChatTool[] {
 }
 
 export async function invokeAgentTool(callId: string, name: string, rawArguments: string): Promise<AgentToolResult> {
-  const args = parseArgs(rawArguments);
-
   try {
+    const args = parseToolInput(rawArguments);
     switch (name) {
       case 'get_workspace_summary':
         return result(callId, name, await getWorkspaceSummary());
@@ -420,15 +420,6 @@ async function runCommand(args: Record<string, unknown>): Promise<string> {
 
 function result(callId: string, name: string, content: string): AgentToolResult {
   return { callId, name, content };
-}
-
-function parseArgs(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value || '{}') as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
 }
 
 function positiveNumber(value: unknown, fallback: number): number {

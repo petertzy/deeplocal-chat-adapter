@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { getConfig } from './config';
 import { DeepLocalClient } from './deeplocal-client';
 import { Logger } from './logger';
+import { parseToolInput } from './tool-input';
 import { ChatMessage, ChatTool, DeepLocalModel } from './protocol';
 
 interface DeepLocalChatModel extends vscode.LanguageModelChatInformation {
@@ -189,15 +190,6 @@ function partsToText(parts: ReadonlyArray<vscode.LanguageModelInputPart | unknow
 
     return '';
   }).filter(Boolean).join('\n');
-}
-
-function parseToolInput(value: string): object {
-  try {
-    const parsed = JSON.parse(value || '{}') as unknown;
-    return parsed && typeof parsed === 'object' ? parsed as object : {};
-  } catch {
-    return {};
-  }
 }
 
 function numberOption(value: unknown): number | undefined {

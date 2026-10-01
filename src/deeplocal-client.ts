@@ -1,6 +1,7 @@
 import { DeepLocalConfig, getConfig } from './config';
 import { Logger } from './logger';
 import { modelInformation } from './model-metadata';
+import { parseToolInput } from './tool-input';
 import {
   ChatCompletionChunk,
   ChatCompletionRequest,
@@ -109,6 +110,7 @@ export class DeepLocalClient {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       const toolBuffer = new Map<number, PendingToolCall>();
+      const completion: { finishReason?: string } = {};
       let bufferedText = '';
       let sawDone = false;
 
@@ -128,7 +130,7 @@ export class DeepLocalClient {
               sawDone = true;
               continue;
             }
-            const event = this.readStreamLine(line, toolBuffer);
+            const event = this.readStreamLine(line, toolBuffer, completion);
             if (event) {
               yield event;
             }
@@ -143,20 +145,23 @@ export class DeepLocalClient {
           if (this.isDoneLine(bufferedText)) {
             sawDone = true;
           } else {
-            const event = this.readStreamLine(bufferedText, toolBuffer);
+            const event = this.readStreamLine(bufferedText, toolBuffer, completion);
             if (event) {
               yield event;
             }
           }
         }
         if (!sawDone) {
-          throw new Error('DeepLocal stream ended unexpectedly before [DONE]; the response may be incomplete.');
+          throw new Error(`DeepLocal stream ended unexpectedly before [DONE]; ${toolBuffer.size ? 'tool calls are incomplete and were not executed.' : 'the response may be incomplete.'}`);
         }
       } finally {
         await reader.cancel().catch(() => undefined);
         reader.releaseLock();
       }
 
+      if (toolBuffer.size && completion.finishReason && completion.finishReason !== 'tool_calls' && completion.finishReason !== 'stop') {
+        throw new Error('DeepLocal terminated before completing tool calls; no tools were executed. Retry with a larger output limit or another model.');
+      }
       for (const call of finishToolCalls(toolBuffer)) {
         yield { kind: 'toolCall', value: call };
       }
@@ -169,7 +174,7 @@ export class DeepLocalClient {
     return line.trim() === 'data: [DONE]';
   }
 
-  private readStreamLine(line: string, toolBuffer: Map<number, PendingToolCall>): StreamEvent | undefined {
+  private readStreamLine(line: string, toolBuffer: Map<number, PendingToolCall>, completion: { finishReason?: string }): StreamEvent | undefined {
     const trimmed = line.trim();
     if (!trimmed.startsWith('data:')) {
       return undefined;
@@ -183,10 +188,12 @@ export class DeepLocalClient {
     let chunk: ChatCompletionChunk;
     try {
       chunk = JSON.parse(data) as ChatCompletionChunk;
-    } catch (error) {
-      throw new Error(`DeepLocal stream contained malformed JSON: ${messageOf(error)}`);
+    } catch {
+      throw new Error('DeepLocal stream contained malformed JSON; the response may be incomplete. Retry the request.');
     }
 
+    const finishReason = chunk.choices?.[0]?.finish_reason;
+    if (finishReason) completion.finishReason = finishReason;
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) {
       return undefined;
@@ -194,14 +201,22 @@ export class DeepLocalClient {
 
     if (delta.tool_calls?.length) {
       for (const part of delta.tool_calls) {
-        const index = part.index ?? 0;
+        let index = part.index;
+        if (index === undefined) {
+          const matching = [...toolBuffer.entries()].find(([, call]) => part.id && call.id === part.id);
+          if (matching) index = matching[0];
+          else if (!toolBuffer.size && delta.tool_calls.length === 1) index = 0;
+          else if (toolBuffer.size === 1 && delta.tool_calls.length === 1 && !part.id) index = toolBuffer.keys().next().value;
+          else throw new Error('Ambiguous tool delta without an index; retry with a server that identifies each parallel call.');
+        }
+        if (index === undefined || !Number.isSafeInteger(index) || index < 0) throw new Error('Invalid tool-call index. Retry the request.');
         const pending = toolBuffer.get(index) ?? { arguments: '' };
+        if (part.id && pending.id && part.id !== pending.id) throw new Error('Conflicting tool-call IDs for one index. Retry the request.');
         pending.id = part.id ?? pending.id;
-        pending.name = part.function?.name ?? pending.name;
+        pending.name = (pending.name ?? '') + (part.function?.name ?? '');
         pending.arguments += part.function?.arguments ?? '';
         toolBuffer.set(index, pending);
       }
-      return undefined;
     }
 
     return delta.content ? { kind: 'text', value: delta.content } : undefined;
@@ -336,15 +351,18 @@ function safeErrorDetail(body: string, apiKey: string): string {
 function finishToolCalls(buffer: Map<number, PendingToolCall>): ToolCall[] {
   return Array.from(buffer.entries())
     .sort(([left], [right]) => left - right)
-    .filter(([, call]) => Boolean(call.id && call.name))
-    .map(([, call]) => ({
-      id: call.id as string,
-      type: 'function',
-      function: {
-        name: call.name as string,
-        arguments: call.arguments || '{}',
-      },
-    }));
+    .map(([index, call]) => {
+      if (!call.id || !call.name) throw new Error(`Incomplete tool call at index ${index}: missing ID or name. Retry the request.`);
+      parseToolInput(call.arguments);
+      return {
+        id: call.id,
+        type: 'function',
+        function: {
+          name: call.name,
+          arguments: call.arguments,
+        },
+      };
+    });
 }
 
 function messageOf(error: unknown): string {
