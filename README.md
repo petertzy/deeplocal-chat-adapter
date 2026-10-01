@@ -10,9 +10,31 @@
 
 - Use DeepLocal models from VS Code.
 - Chat in the DeepLocal Secondary Side Bar view.
-- Edit the active file with confirmation before changes are applied.
+- Create and edit files by path in the default Agent mode, with inline approval and diff previews.
 - Let capable models inspect files, search the workspace, read diagnostics, and propose confirmed edits.
 - Restore recent chat sessions after reloading VS Code.
+
+## Coding agent workflow
+
+Open a project folder, choose a tool-capable model, and describe the task in the
+sidebar. Agent mode is enabled by default. For example, ask “Create snake.html
+with a playable snake game.” The agent inspects the workspace and calls
+`create_file`; it no longer rewrites the request as an edit to the active editor.
+`create_file` refuses to overwrite an existing file.
+
+File changes appear as sidebar approval cards with the target path. Use
+**Preview diff**, then **Approve** or **Reject**. Approved changes are saved and
+opened in the editor; command execution also requires approval. Tool results
+are expandable and retained in the conversation. Existing unsaved edits and
+files changed during review are protected. The agent uses results to continue
+working and reports when it reaches its step limit rather than claiming success.
+
+**Stop** cancels the current request, pending approval, and a running command;
+already applied changes remain. Session switching is disabled while working.
+Turn off Agent mode for discussion without tools. This workflow follows
+[Cline's file review and tool execution approach](https://github.com/cline/cline#edits-code-across-your-project);
+it does not include Cline's checkpoints, browser automation, or background terminals.
+HTML files open in the editor; open the saved file in a browser to play the game.
 
 ## Chat session scope
 
@@ -39,7 +61,7 @@ when the server provides no tool metadata. The model tooltip explains this
 fallback. Image input remains disabled because this adapter sends text only.
 
 Models explicitly lacking tool support remain available for plain chat; the
-sidebar reports the reason and sends without tools. The adapter supports the
+sidebar reports the reason and asks you to select Chat mode or a tool-capable model. The adapter supports the
 `openai`, `openai-compatible`, and `chat-completions` protocol hints and the
 `/chat/completions` or `/v1/chat/completions` endpoint hints. Other declared
 protocols/endpoints produce a clear error before sending. Metadata never

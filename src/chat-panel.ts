@@ -6,16 +6,17 @@ import { Logger } from './logger';
 import { ChatMessage, ToolCall } from './protocol';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey';
+  type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey';
+  approvalId?: string;
+  approved?: boolean;
   text?: string;
   model?: string;
   sessionId?: string;
   useAgent?: boolean;
-  editActiveFile?: boolean;
 }
 
 interface PersistedChatItem {
-  role: 'You' | 'DeepLocal';
+  role: 'You' | 'DeepLocal' | 'Tool';
   text: string;
 }
 
@@ -37,6 +38,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   private sessions: ChatSession[] = [];
   private activeSessionId: string;
   private activeRequestId: string | undefined;
+  private taskController: AbortController | undefined;
+  private pendingApproval: { id: string; resolve: (approved: boolean) => void; preview?: () => Promise<void> } | undefined;
   private persistTimer: ReturnType<typeof setTimeout> | undefined;
   private view: vscode.WebviewView | undefined;
   private readonly scopedSessionsKey = `${ChatPanel.sessionsKey}.${workspaceIdentity()}`;
@@ -60,10 +63,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   async newSession(): Promise<void> {
-    if (this.activeRequestId) {
-      this.client.cancel(this.activeRequestId);
-      this.activeRequestId = undefined;
-    }
+    if (this.activeRequestId) return;
 
     const session = createSession();
     this.sessions.unshift(session);
@@ -80,18 +80,26 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     };
     view.webview.html = renderHtml(view.webview);
     view.onDidDispose(() => {
-      if (this.activeRequestId) {
-        this.client.cancel(this.activeRequestId);
-      }
+      this.stopTask();
       this.view = undefined;
     });
 
     view.webview.onDidReceiveMessage((message: WebviewMessage) => {
-      void this.handleMessage(message);
+      void this.handleMessage(message).catch((error) => this.postError(messageOf(error)));
     });
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
+    if (message.type === 'stop') { this.stopTask(); return; }
+    if (message.type === 'approval' || message.type === 'preview') {
+      const pending = this.pendingApproval;
+      if (!pending || pending.id !== message.approvalId) return;
+      if (message.type === 'preview') {
+        try { await pending.preview?.(); } catch (error) { this.postError(messageOf(error)); }
+      } else pending.resolve(message.approved === true);
+      return;
+    }
+    if (this.activeRequestId) return;
     if (message.type === 'setBackend') {
       const selected = await vscode.window.showQuickPick([
         { label: 'Local DeepLocal', description: 'http://127.0.0.1:14567/v1', value: 'local' },
@@ -135,8 +143,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     }
 
     if (message.type === 'switchSession' && message.sessionId) {
+      if (!this.sessions.some((session) => session.id === message.sessionId)) return;
       this.activeSessionId = message.sessionId;
-      await this.context.globalState.update(ChatPanel.activeSessionKey, this.activeSessionId);
+      await this.persist();
       this.postSessions();
       this.restoreTranscript();
       return;
@@ -162,7 +171,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       return;
     }
 
-    await this.sendPrompt(model, text, Boolean(message.useAgent), Boolean(message.editActiveFile));
+    await this.sendPrompt(model, text, message.useAgent !== false);
   }
 
   private async sendModels(): Promise<void> {
@@ -180,85 +189,98 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  private async sendPrompt(model: string, text: string, useAgent: boolean, editActiveFile: boolean): Promise<void> {
+  private async sendPrompt(model: string, text: string, useAgent: boolean): Promise<void> {
     const information = this.client.modelInformation(model);
     if (useAgent && !information.toolCalling) {
-      this.post({ type: 'notice', message: `${information.reason} Sending as plain chat.` });
-      useAgent = false;
+      this.postError(`${information.reason} Select a tool-capable model for Agent mode, or choose Chat mode.`);
+      this.post({ type: 'assistantDone' });
+      return;
+    }
+    if (useAgent && !vscode.workspace.workspaceFolders?.length) {
+      this.postError('Open a project folder in VS Code before starting an agent task.');
+      this.post({ type: 'assistantDone' });
+      return;
     }
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.activeRequestId = requestId;
-    const activeFile = editActiveFile ? getActiveTextFile() : undefined;
-    const userMessage = activeFile ? buildEditPrompt(text, activeFile) : text;
+    const controller = new AbortController();
+    this.taskController = controller;
+    const userMessage = text;
     const session = this.activeSession();
-    session.history.push({ role: 'user', content: userMessage });
-    session.transcript.push({ role: 'You', text });
-    if (session.transcript.length === 1) {
-      session.title = makeTitle(text);
-    }
-    session.updatedAt = Date.now();
-    await this.persist();
-    this.postSessions();
-
     const assistantItem: PersistedChatItem = { role: 'DeepLocal', text: '' };
-    session.transcript.push(assistantItem);
-    await this.persist();
-
-    this.post({ type: 'assistantStart' });
-
-    const messages = [...session.history];
-    if (getConfig().injectSystemPrompt && messages[0]?.role !== 'system') {
-      messages.unshift({
-        role: 'system',
-        content: activeFile
-          ? 'You are a careful coding assistant. Return only the complete updated file in one fenced code block. Do not add explanations.'
-          : [
-              'You are DeepLocal, a coding assistant inside VS Code.',
-              'Use tools when you need to inspect or modify workspace files.',
-              'Use get_active_file and get_selection before editing the active editor when relevant.',
-              'Use get_diagnostics after edits when the user asks you to fix errors.',
-              'Prefer small targeted edits. Explain what changed after tools finish.',
-              'Ask before destructive work; file write and command tools already require user confirmation.',
-            ].join('\n'),
-      });
-    }
-
     let answer = '';
     try {
+      session.history.push({ role: 'user', content: userMessage });
+      session.transcript.push({ role: 'You', text });
+      if (session.transcript.length === 1) {
+        session.title = makeTitle(text);
+      }
+      session.updatedAt = Date.now();
+      await this.persist();
+      this.postSessions();
+
+      session.transcript.push(assistantItem);
+      await this.persist();
+
+      this.post({ type: 'assistantStart' });
+
+      const messages = [...session.history];
+      if ((useAgent || getConfig().injectSystemPrompt) && messages[0]?.role !== 'system') {
+        messages.unshift({
+          role: 'system',
+          content: [
+            'You are DeepLocal, a coding assistant inside VS Code.',
+            useAgent ? 'You are in Agent mode. Execute requested work using tools, then report actual results. Do not print full file contents in chat when asked to implement something.' : 'You are in Chat mode. Explain and discuss; no file changes or commands are available.',
+            'Inspect the workspace before changing files. Paths are relative to the workspace root.',
+            'When asked to create a new file, use create_file with an appropriate new path. Never replace the active file merely because it is open.',
+            'Read existing files before editing. Use replace_in_file for targeted changes; write_file for intentional full replacements.',
+            'Use get_active_file and get_selection before editing the active editor when relevant.',
+            'Use get_diagnostics after edits when the user asks you to fix errors.',
+            'Prefer small targeted edits. Explain what changed after tools finish.',
+            'Ask before destructive work; file write and command tools already require user confirmation.',
+            'After creating a file, use open_file if appropriate. Check diagnostics or run relevant tests. Report whether verification actually ran.',
+            'If a tool fails or is declined, respect that result and never claim that the action succeeded. Answer in the user’s language.',
+          ].join('\n'),
+        });
+      }
+
       const onDelta = (delta: string) => {
+        controller.signal.throwIfAborted();
         assistantItem.text += delta;
         session.updatedAt = Date.now();
         this.schedulePersist();
       };
-      answer = activeFile
-        ? await this.runSimpleEditRequest(requestId, model, messages, onDelta)
-        : useAgent
-          ? await this.runAgentRequest(requestId, model, messages, onDelta)
-          : await this.runSimpleEditRequest(requestId, model, messages, onDelta);
+      controller.signal.throwIfAborted();
+      answer = useAgent
+        ? await this.runAgentRequest(requestId, model, messages, onDelta, controller.signal, session)
+        : await this.runChatRequest(requestId, model, messages, onDelta);
+      controller.signal.throwIfAborted();
 
       session.history.push({ role: 'assistant', content: answer });
       assistantItem.text = answer;
+      this.post({ type: 'assistantFinal', text: answer });
       session.updatedAt = Date.now();
       await this.persist();
       this.postSessions();
-      this.post({ type: 'assistantDone' });
-      if (activeFile) {
-        await this.applyGeneratedFile(activeFile, answer);
-      }
     } catch (error) {
-      this.logger.error(`DeepLocal chat failed: ${messageOf(error)}`);
-      this.postError(`DeepLocal chat failed: ${messageOf(error)}`);
+      if (controller.signal.aborted) {
+        this.post({ type: 'notice', message: 'Task stopped. Already applied changes are retained.' });
+      } else {
+        this.logger.error(`DeepLocal chat failed: ${messageOf(error)}`);
+        this.postError(`DeepLocal chat failed: ${messageOf(error)}`);
+      }
       if (!assistantItem.text.trim()) {
         session.transcript = session.transcript.filter((item) => item !== assistantItem);
       }
       await this.persist();
-      this.post({ type: 'assistantDone' });
     } finally {
       this.activeRequestId = undefined;
+      this.taskController = undefined;
+      this.post({ type: 'assistantDone' });
     }
   }
 
-  private async runSimpleEditRequest(
+  private async runChatRequest(
     requestId: string,
     model: string,
     messages: ChatMessage[],
@@ -286,11 +308,15 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     model: string,
     messages: ChatMessage[],
     onDelta: (delta: string) => void,
+    signal: AbortSignal,
+    session: ChatSession,
   ): Promise<string> {
     const workingMessages = [...messages];
     let finalAnswer = '';
 
     for (let turn = 0; turn < getConfig().agentMaxTurns; turn += 1) {
+      signal.throwIfAborted();
+      this.post({ type: 'status', message: `Working · step ${turn + 1}/${getConfig().agentMaxTurns}` });
       let answer = '';
       const toolCalls: ToolCall[] = [];
 
@@ -313,6 +339,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
       if (!toolCalls.length) {
         finalAnswer = answer;
+        if (!finalAnswer.trim()) throw new Error('The model returned no answer or tool actions. Retry or choose another model.');
         break;
       }
 
@@ -322,20 +349,54 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         tool_calls: toolCalls,
       });
 
-      for (const call of toolCalls) {
-        this.post({ type: 'notice', message: `Running ${call.function.name}...` });
-      }
-
       const results = [];
       for (const call of toolCalls) {
-        results.push(await invokeAgentTool(call.id, call.function.name, call.function.arguments));
+        if (signal.aborted) {
+          results.push({ callId: call.id, name: call.function.name, content: 'Task stopped; tool was not executed.' });
+          continue;
+        }
+        this.post({ type: 'status', message: `Running ${call.function.name}…` });
+        const result = await invokeAgentTool(call.id, call.function.name, call.function.arguments, {
+          signal,
+          approve: (message, preview) => this.requestApproval(message, signal, preview),
+        });
+        results.push(result);
+        const text = `${call.function.name}\n${result.content}`;
+        session.transcript.push({ role: 'Tool', text });
+        this.post({ type: 'toolResult', text });
+        await this.persist();
       }
       workingMessages.push(...toolResultsToMessages(results));
-
-      this.post({ type: 'assistantStart' });
+      // Preserve complete assistant/tool groups for follow-up requests.
+      session.history.push(...workingMessages.slice(workingMessages.length - results.length - 1));
+      signal.throwIfAborted();
     }
 
-    return finalAnswer || 'Done.';
+    if (!finalAnswer) throw new Error('Agent step limit reached. Work may be incomplete; review the tool results and ask to continue.');
+    return finalAnswer;
+  }
+
+  private stopTask(): void {
+    this.taskController?.abort();
+    if (this.activeRequestId) this.client.cancel(this.activeRequestId);
+    this.pendingApproval?.resolve(false);
+  }
+
+  private requestApproval(message: string, signal: AbortSignal, preview?: () => Promise<void>): Promise<boolean> {
+    signal.throwIfAborted();
+    return new Promise((resolve) => {
+      const id = createId();
+      const finish = (approved: boolean) => {
+        signal.removeEventListener('abort', onAbort);
+        this.pendingApproval = undefined;
+        this.post({ type: 'approvalDone', approvalId: id });
+        resolve(approved);
+      };
+      const onAbort = () => finish(false);
+      this.pendingApproval = { id, resolve: finish, preview };
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.post({ type: 'approval', approvalId: id, message, hasPreview: Boolean(preview) });
+    });
   }
 
   private postError(message: string): void {
@@ -370,7 +431,10 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     }
     for (const session of this.sessions) {
       repairTranscript(session);
-      session.history = session.history.slice(-40);
+      if (session.history.length > 40) {
+        const boundary = session.history.findIndex((message, index) => index >= session.history.length - 40 && message.role === 'user');
+        if (boundary > 0) session.history = session.history.slice(boundary);
+      }
       session.transcript = session.transcript.slice(-80);
     }
     this.sessions.sort((left, right) => right.updatedAt - left.updatedAt);
@@ -464,40 +528,6 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     return [createSession()];
   }
 
-  private async applyGeneratedFile(activeFile: ActiveTextFile, answer: string): Promise<void> {
-    const nextContent = extractUpdatedFile(answer);
-    if (!nextContent) {
-      this.postError('DeepLocal did not return a complete file block to apply.');
-      return;
-    }
-
-    const choice = await vscode.window.showWarningMessage(
-      `Apply DeepLocal changes to ${activeFile.document.fileName}?`,
-      { modal: true },
-      'Apply',
-    );
-
-    if (choice !== 'Apply') {
-      this.post({ type: 'notice', message: 'File update skipped.' });
-      return;
-    }
-
-    const edit = new vscode.WorkspaceEdit();
-    const fullRange = new vscode.Range(
-      activeFile.document.positionAt(0),
-      activeFile.document.positionAt(activeFile.document.getText().length),
-    );
-    edit.replace(activeFile.document.uri, fullRange, nextContent);
-
-    const applied = await vscode.workspace.applyEdit(edit);
-    if (!applied) {
-      this.postError('VS Code could not apply the generated file update.');
-      return;
-    }
-
-    await activeFile.document.save();
-    this.post({ type: 'notice', message: 'Applied changes to the active file.' });
-  }
 }
 
 /** Stable scope used by persistence and diagnostics. Empty windows intentionally
@@ -508,49 +538,6 @@ export function workspaceIdentity(workspace: Pick<typeof vscode.workspace, 'work
   }
   const folders = workspace.workspaceFolders?.map((folder) => folder.uri.toString()).sort();
   return folders?.length ? `folders:${folders.join('|')}` : 'empty';
-}
-
-interface ActiveTextFile {
-  document: vscode.TextDocument;
-  languageId: string;
-  content: string;
-}
-
-function getActiveTextFile(): ActiveTextFile | undefined {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.uri.scheme !== 'file') {
-    vscode.window.showWarningMessage('Open a file editor before using DeepLocal file editing.');
-    return undefined;
-  }
-
-  return {
-    document: editor.document,
-    languageId: editor.document.languageId,
-    content: editor.document.getText(),
-  };
-}
-
-function buildEditPrompt(instruction: string, file: ActiveTextFile): string {
-  return [
-    'Update the active file according to this request:',
-    instruction,
-    '',
-    `File path: ${file.document.fileName}`,
-    `Language: ${file.languageId}`,
-    '',
-    'Current file content:',
-    `\`\`\`${file.languageId}`,
-    file.content,
-    '```',
-    '',
-    'Return only the complete updated file content in a single fenced code block.',
-  ].join('\n');
-}
-
-function extractUpdatedFile(answer: string): string | undefined {
-  const fence = answer.match(/```[^\n\r]*\r?\n([\s\S]*?)\r?\n```/);
-  const content = fence?.[1] ?? answer.trim();
-  return content.trim().length > 0 ? content : undefined;
 }
 
 function createSession(): ChatSession {
@@ -575,7 +562,7 @@ function makeTitle(text: string): string {
 function repairTranscript(session: ChatSession): ChatSession {
   const assistantTranscriptCount = session.transcript.filter((item) => item.role === 'DeepLocal').length;
   const assistantHistory = session.history
-    .filter((message) => message.role === 'assistant' && typeof message.content === 'string' && message.content.trim())
+    .filter((message) => message.role === 'assistant' && !message.tool_calls?.length && typeof message.content === 'string' && message.content.trim())
     .map((message) => message.content as string);
 
   if (assistantTranscriptCount >= assistantHistory.length) {
@@ -594,7 +581,7 @@ function repairTranscript(session: ChatSession): ChatSession {
       rebuilt.push(visible ?? { role: 'You', text: summarizeUserMessage(message.content) });
     }
 
-    if (message.role === 'assistant' && typeof message.content === 'string' && message.content.trim()) {
+    if (message.role === 'assistant' && !message.tool_calls?.length && typeof message.content === 'string' && message.content.trim()) {
       rebuilt.push({ role: 'DeepLocal', text: assistantHistory[visibleAssistantIndex] });
       visibleAssistantIndex += 1;
     }
@@ -632,7 +619,7 @@ function renderHtml(webview: vscode.Webview): string {
     }
     .shell {
       display: grid;
-      grid-template-rows: 1fr auto;
+      grid-template-rows: minmax(0, 1fr) auto;
       height: 100vh;
     }
     select, textarea, button {
@@ -729,11 +716,18 @@ function renderHtml(webview: vscode.Webview): string {
     .error {
       color: var(--vscode-errorForeground);
     }
+    #status { font-size: 12px; color: var(--vscode-descriptionForeground); }
+    .tool { white-space: normal; }
+    .tool pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
+    .approval { border-color: var(--vscode-focusBorder); }
+    .approval button { margin: 8px 6px 0 0; }
+    [hidden] { display: none !important; }
+    summary { cursor: pointer; }
   </style>
 </head>
 <body>
   <div class="shell">
-    <main id="messages"></main>
+    <main id="messages" aria-label="Conversation"></main>
     <footer>
       <div class="session-row">
         <select id="session"></select>
@@ -749,7 +743,8 @@ function renderHtml(webview: vscode.Webview): string {
         <button id="setRemoteKeyButton">Set API key</button>
         <button id="clearRemoteKeyButton">Clear</button>
       </div>
-      <textarea id="prompt" placeholder="Ask DeepLocal..."></textarea>
+      <div id="status" role="status" aria-live="polite">Ready · Agent can inspect, create and edit workspace files.</div>
+      <textarea id="prompt" aria-label="Task" placeholder="Describe a task, e.g. Create snake.html with a playable snake game…"></textarea>
       <div class="controls">
         <select id="model"></select>
         <button id="refresh">Refresh</button>
@@ -757,16 +752,14 @@ function renderHtml(webview: vscode.Webview): string {
       <div class="actions">
         <button id="restoreSession">Reload</button>
         <button id="send">Send</button>
+        <button id="stop" hidden>Stop</button>
       </div>
       <div class="options">
         <label class="option">
           <input id="useAgent" type="checkbox" checked>
-          <span>Agent tools</span>
+          <span>Agent mode · inspect → review → apply → verify</span>
         </label>
-        <label class="option">
-          <input id="editActiveFile" type="checkbox" checked>
-          <span>Edit active file</span>
-        </label>
+        <small>Turn off for chat only. File changes and commands require approval below.</small>
       </div>
     </footer>
   </div>
@@ -788,11 +781,34 @@ function renderHtml(webview: vscode.Webview): string {
     const setRemoteKeyButton = document.getElementById('setRemoteKeyButton');
     const clearRemoteKeyButton = document.getElementById('clearRemoteKeyButton');
     const useAgent = document.getElementById('useAgent');
-    const editActiveFile = document.getElementById('editActiveFile');
+    const stop = document.getElementById('stop');
+    const status = document.getElementById('status');
+    const approvals = new Map();
+    let busy = false;
     let currentAssistant;
     let activeSessionId;
     let pendingPrompt;
     const drafts = new Map();
+
+    function setBusy(value) {
+      busy = value;
+      for (const control of [send, session, newSession, deleteSession, restoreSession, backendButton, refresh, model, useAgent, setRemoteKeyButton, clearRemoteKeyButton]) control.disabled = value;
+      stop.hidden = !value;
+      status.textContent = value ? 'Working…' : 'Ready';
+    }
+
+    function addTool(text) {
+      const item = document.createElement('details');
+      item.className = 'message tool';
+      const title = document.createElement('summary');
+      const lines = text.split('\\n');
+      title.textContent = lines[0] + (lines[1] ? ' · ' + lines[1].slice(0, 160) : '');
+      const output = document.createElement('pre');
+      output.textContent = text.substring(text.indexOf('\\n') + 1);
+      item.append(title, output);
+      messages.append(item);
+      messages.scrollTop = messages.scrollHeight;
+    }
 
     function addMessage(role, text, className) {
       const item = document.createElement('section');
@@ -844,13 +860,39 @@ function renderHtml(webview: vscode.Webview): string {
       if (msg.type === 'restore') {
         messages.replaceChildren();
         for (const item of msg.items) {
-          addMessage(item.role, item.text);
+          if (item.role === 'Tool') addTool(item.text);
+          else addMessage(item.role, item.text);
         }
+      }
+      if (msg.type === 'status') status.textContent = msg.message;
+      if (msg.type === 'toolResult') addTool(msg.text);
+      if (msg.type === 'approval') {
+        status.textContent = 'Waiting for your approval';
+        const body = addMessage('Review action', msg.message, 'approval');
+        approvals.set(msg.approvalId, body);
+        const actions = msg.hasPreview ? ['Preview diff', 'Approve', 'Reject'] : ['Approve', 'Reject'];
+        for (const action of actions) {
+          const button = document.createElement('button');
+          button.textContent = action;
+          button.addEventListener('click', () => {
+            const preview = action === 'Preview diff';
+            vscode.postMessage({ type: preview ? 'preview' : 'approval', approvalId: msg.approvalId, approved: action === 'Approve' });
+            if (!preview) for (const element of body.querySelectorAll('button')) element.disabled = true;
+          });
+          body.append(button);
+        }
+        messages.scrollTop = messages.scrollHeight;
+      }
+      if (msg.type === 'approvalDone') {
+        const body = approvals.get(msg.approvalId);
+        if (body) body.parentElement.remove();
+        approvals.delete(msg.approvalId);
       }
       if (msg.type === 'assistantStart') {
         currentAssistant = addMessage('DeepLocal', '');
-        send.disabled = true;
+        setBusy(true);
       }
+      if (msg.type === 'assistantFinal' && currentAssistant) currentAssistant.textContent = msg.text;
       if (msg.type === 'assistantDelta' && currentAssistant) {
         currentAssistant.textContent += msg.text;
         messages.scrollTop = messages.scrollHeight;
@@ -861,7 +903,7 @@ function renderHtml(webview: vscode.Webview): string {
           drafts.delete(activeSessionId);
         }
         pendingPrompt = undefined;
-        send.disabled = false;
+        setBusy(false);
         currentAssistant = undefined;
       }
       if (msg.type === 'error') {
@@ -869,7 +911,6 @@ function renderHtml(webview: vscode.Webview): string {
         // Keep the submitted text in the composer so it can be edited or
         // retried. The prompt is only consumed after a successful response.
         pendingPrompt = undefined;
-        send.disabled = false;
       }
       if (msg.type === 'notice') {
         addMessage('DeepLocal', msg.message);
@@ -878,9 +919,10 @@ function renderHtml(webview: vscode.Webview): string {
 
     send.addEventListener('click', () => {
       const text = prompt.value.trim();
-      if (!text || !model.value) {
+      if (busy || !text || !model.value) {
         return;
       }
+      setBusy(true);
       addMessage('You', text);
       drafts.set(activeSessionId, prompt.value);
       pendingPrompt = text;
@@ -889,8 +931,11 @@ function renderHtml(webview: vscode.Webview): string {
         text,
         model: model.value,
         useAgent: useAgent.checked,
-        editActiveFile: editActiveFile.checked,
       });
+    });
+    stop.addEventListener('click', () => {
+      status.textContent = 'Stopping…';
+      vscode.postMessage({ type: 'stop' });
     });
 
     prompt.addEventListener('keydown', (event) => {

@@ -13,8 +13,23 @@ export interface AgentToolResult {
   content: string;
 }
 
+export interface AgentToolOptions {
+  signal?: AbortSignal;
+  approve?: (message: string, preview?: () => Promise<void>) => Promise<boolean>;
+}
+
 export function getAgentTools(): ChatTool[] {
   return [
+    {
+      type: 'function',
+      function: {
+        name: 'create_file',
+        description: 'Create a NEW workspace file at the specified path. Never overwrites an existing file. Use this when asked to create a file.',
+        parameters: { type: 'object', required: ['path', 'content'], properties: {
+          path: { type: 'string' }, content: { type: 'string' },
+        } },
+      },
+    },
     {
       type: 'function',
       function: {
@@ -158,8 +173,9 @@ export function getAgentTools(): ChatTool[] {
   ];
 }
 
-export async function invokeAgentTool(callId: string, name: string, rawArguments: string): Promise<AgentToolResult> {
+export async function invokeAgentTool(callId: string, name: string, rawArguments: string, options: AgentToolOptions = {}): Promise<AgentToolResult> {
   try {
+    options.signal?.throwIfAborted();
     const args = parseToolInput(rawArguments);
     switch (name) {
       case 'get_workspace_summary':
@@ -179,11 +195,13 @@ export async function invokeAgentTool(callId: string, name: string, rawArguments
       case 'search_workspace':
         return result(callId, name, await searchWorkspace(args));
       case 'write_file':
-        return result(callId, name, await writeFile(args));
+        return result(callId, name, await writeFile(args, options));
+      case 'create_file':
+        return result(callId, name, await writeFile(args, options, true));
       case 'replace_in_file':
-        return result(callId, name, await replaceInFile(args));
+        return result(callId, name, await replaceInFile(args, options));
       case 'run_command':
-        return result(callId, name, await runCommand(args));
+        return result(callId, name, await runCommand(args, options));
       default:
         return result(callId, name, `Unknown tool: ${name}`);
     }
@@ -357,21 +375,20 @@ async function searchWorkspace(args: Record<string, unknown>): Promise<string> {
   return hits.join('\n') || '(no matches)';
 }
 
-async function writeFile(args: Record<string, unknown>): Promise<string> {
+async function writeFile(args: Record<string, unknown>, options: AgentToolOptions, createOnly = false): Promise<string> {
   const uri = resolveWorkspacePath(args.path);
-  const content = String(args.content ?? '');
-  const ok = await confirm(`Apply DeepLocal write to ${vscode.workspace.asRelativePath(uri)}?`);
-  if (!ok) {
-    return 'User declined file write.';
+  if (typeof args.content !== 'string') throw new Error('content must be a string.');
+  let exists = true;
+  try { await vscode.workspace.fs.stat(uri); } catch (error) {
+    if ((error as { code?: string }).code !== 'FileNotFound') throw error;
+    exists = false;
   }
-
-  await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
-  const document = await vscode.workspace.openTextDocument(uri);
-  await document.save();
-  return `Wrote ${content.length} characters to ${vscode.workspace.asRelativePath(uri)}.`;
+  if (createOnly && exists) throw new Error('File already exists; choose a new path or explicitly edit the existing file.');
+  const document = exists ? await vscode.workspace.openTextDocument(uri) : undefined;
+  return applyFileChange(uri, document, args.content, options);
 }
 
-async function replaceInFile(args: Record<string, unknown>): Promise<string> {
+async function replaceInFile(args: Record<string, unknown>, options: AgentToolOptions): Promise<string> {
   const uri = resolveWorkspacePath(args.path);
   const oldText = String(args.oldText ?? '');
   const newText = String(args.newText ?? '');
@@ -380,31 +397,61 @@ async function replaceInFile(args: Record<string, unknown>): Promise<string> {
     throw new Error('oldText is required.');
   }
 
-  const original = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+  const document = await vscode.workspace.openTextDocument(uri);
+  const original = document.getText();
   if (!original.includes(oldText)) {
     return 'oldText was not found; no changes applied.';
   }
 
-  const ok = await confirm(`Apply DeepLocal replacement in ${vscode.workspace.asRelativePath(uri)}?`);
-  if (!ok) {
-    return 'User declined file replacement.';
-  }
-
-  const updated = original.replace(oldText, newText);
-  await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(updated));
-  const document = await vscode.workspace.openTextDocument(uri);
-  await document.save();
-  return `Updated ${vscode.workspace.asRelativePath(uri)}.`;
+  if (original.indexOf(oldText) !== original.lastIndexOf(oldText)) throw new Error('oldText matches multiple locations; provide more context.');
+  return applyFileChange(uri, document, original.replace(oldText, newText), options);
 }
 
-async function runCommand(args: Record<string, unknown>): Promise<string> {
+async function applyFileChange(uri: vscode.Uri, document: vscode.TextDocument | undefined, content: string, options: AgentToolOptions): Promise<string> {
+  const label = vscode.workspace.asRelativePath(uri);
+  if (document?.isDirty) throw new Error('File has unsaved changes. Save or discard them before requesting an agent edit.');
+  const version = document?.version;
+  const original = document?.getText() ?? '';
+  const scheme = `deeplocal-preview-${Math.random().toString(36).slice(2)}`;
+  const before = vscode.Uri.parse(`${scheme}:/before/${encodeURIComponent(label)}`);
+  const after = vscode.Uri.parse(`${scheme}:/after/${encodeURIComponent(label)}`);
+  const provider = vscode.workspace.registerTextDocumentContentProvider(scheme, {
+    provideTextDocumentContent: (target) => target.toString() === before.toString() ? original : content,
+  });
+  try {
+    const preview = async () => { await vscode.commands.executeCommand('vscode.diff', before, after, `${document ? 'Edit' : 'Create'} ${label}`, { preview: true }); };
+    const message = `${document ? 'Edit' : 'Create'} ${label} (${content.split('\n').length} lines)`;
+    const approved = options.approve ? await options.approve(message, preview) : await confirm(message);
+    options.signal?.throwIfAborted();
+    if (!approved) return 'User declined file change. Do not retry this action without new instructions.';
+    if (document && (document.version !== version || document.isDirty)) throw new Error('File changed during review; read it again before editing.');
+    const edit = new vscode.WorkspaceEdit();
+    if (document) edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(original.length)), content);
+    else {
+      edit.createFile(uri, { overwrite: false, ignoreIfExists: false });
+      edit.insert(uri, new vscode.Position(0, 0), content);
+    }
+    options.signal?.throwIfAborted();
+    if (!await vscode.workspace.applyEdit(edit)) throw new Error('VS Code could not apply the file change.');
+    const saved = await vscode.workspace.openTextDocument(uri);
+    if (!await saved.save()) throw new Error('File change applied but could not be saved.');
+    await vscode.window.showTextDocument(saved, { preview: false, preserveFocus: true });
+    return `${document ? 'Updated' : 'Created'} ${label}.`;
+  } finally {
+    provider.dispose();
+  }
+}
+
+async function runCommand(args: Record<string, unknown>, options: AgentToolOptions): Promise<string> {
   const command = String(args.command ?? '').trim();
   const commandArgs = Array.isArray(args.args) ? args.args.map(String) : [];
   if (!command) {
     throw new Error('command is required.');
   }
 
-  const ok = await confirm(`Run command: ${command} ${commandArgs.join(' ')}?`);
+  const message = `Run command: ${command} ${commandArgs.join(' ')}?`;
+  const ok = await (options.approve ? options.approve(message) : confirm(message));
+  options.signal?.throwIfAborted();
   if (!ok) {
     return 'User declined command execution.';
   }
@@ -414,6 +461,7 @@ async function runCommand(args: Record<string, unknown>): Promise<string> {
     cwd: folder.uri.fsPath,
     timeout: 120000,
     maxBuffer: 1024 * 1024,
+    signal: options.signal,
   });
   return truncate([stdout, stderr].filter(Boolean).join('\n'), 30000) || '(command completed with no output)';
 }
