@@ -2,9 +2,7 @@
 
 `deeplocal-chat-adapter` is a VS Code extension that connects local OpenAI-compatible DeepLocal models to the VS Code chat model picker and a built-in sidebar chat view.
 
-<img width="1430" height="683" alt="Image" src="https://github.com/user-attachments/assets/ecb5554a-578b-4ff5-ba57-fa93b4edc0e6" />
-<br>
-<img width="1431" height="731" alt="Image" src="https://github.com/user-attachments/assets/281c5615-96b0-4f3d-905a-8dbef27a5055" />
+<img width="1432" height="742" alt="Image" src="https://github.com/user-attachments/assets/a6dbdc55-0cb2-4dc2-b687-184d0c6d62e2" />
 
 ## Features
 
