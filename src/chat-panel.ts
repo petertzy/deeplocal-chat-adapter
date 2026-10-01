@@ -785,6 +785,9 @@ function renderHtml(webview: vscode.Webview): string {
     const useAgent = document.getElementById('useAgent');
     const editActiveFile = document.getElementById('editActiveFile');
     let currentAssistant;
+    let activeSessionId;
+    let pendingPrompt;
+    const drafts = new Map();
 
     function addMessage(role, text, className) {
       const item = document.createElement('section');
@@ -818,6 +821,10 @@ function renderHtml(webview: vscode.Webview): string {
         }));
       }
       if (msg.type === 'sessions') {
+        if (activeSessionId && activeSessionId !== msg.activeSessionId) {
+          drafts.set(activeSessionId, prompt.value);
+        }
+        activeSessionId = msg.activeSessionId;
         session.replaceChildren(...msg.sessions.map((item) => {
           const option = document.createElement('option');
           option.value = item.id;
@@ -825,6 +832,9 @@ function renderHtml(webview: vscode.Webview): string {
           option.selected = item.id === msg.activeSessionId;
           return option;
         }));
+        if (!pendingPrompt) {
+          prompt.value = drafts.get(activeSessionId) || '';
+        }
       }
       if (msg.type === 'restore') {
         messages.replaceChildren();
@@ -841,11 +851,19 @@ function renderHtml(webview: vscode.Webview): string {
         messages.scrollTop = messages.scrollHeight;
       }
       if (msg.type === 'assistantDone') {
+        if (pendingPrompt !== undefined && prompt.value.trim() === pendingPrompt) {
+          prompt.value = '';
+          drafts.delete(activeSessionId);
+        }
+        pendingPrompt = undefined;
         send.disabled = false;
         currentAssistant = undefined;
       }
       if (msg.type === 'error') {
         addMessage('Error', msg.message, 'error');
+        // Keep the submitted text in the composer so it can be edited or
+        // retried. The prompt is only consumed after a successful response.
+        pendingPrompt = undefined;
         send.disabled = false;
       }
       if (msg.type === 'notice') {
@@ -859,7 +877,8 @@ function renderHtml(webview: vscode.Webview): string {
         return;
       }
       addMessage('You', text);
-      prompt.value = '';
+      drafts.set(activeSessionId, prompt.value);
+      pendingPrompt = text;
       vscode.postMessage({
         type: 'send',
         text,
