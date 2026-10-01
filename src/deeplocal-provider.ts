@@ -27,21 +27,24 @@ export class DeepLocalProvider implements vscode.LanguageModelChatProvider<DeepL
   provideLanguageModelChatInformation(): vscode.ProviderResult<DeepLocalChatModel[]> {
     const config = getConfig();
 
-    return this.models.map((model) => ({
-      id: model.id,
-      deeplocalId: model.id,
-      name: displayName(model.id),
-      family: config.backend === 'remote' ? 'openai' : 'deeplocal',
-      version: '1',
-      tooltip: model.id,
-      detail: config.backend === 'remote' ? 'Remote OpenAI-compatible API' : 'Local DeepLocal',
-      maxInputTokens: config.maxInputTokens,
-      maxOutputTokens: config.maxOutputTokens,
-      capabilities: {
-        toolCalling: config.enableToolCalling,
-        imageInput: false,
-      },
-    }));
+    return this.models.map((model) => {
+      const information = this.client.modelInformation(model.id);
+      return {
+        id: model.id,
+        deeplocalId: model.id,
+        name: displayName(model.id),
+        family: config.backend === 'remote' ? 'openai' : 'deeplocal',
+        version: '1',
+        tooltip: [model.id, information.reason].filter(Boolean).join('\n'),
+        detail: config.backend === 'remote' ? 'Remote OpenAI-compatible API' : 'Local DeepLocal',
+        maxInputTokens: information.maxInputTokens,
+        maxOutputTokens: information.maxOutputTokens,
+        capabilities: {
+          toolCalling: information.toolCalling,
+          imageInput: false,
+        },
+      };
+    });
   }
 
   async provideLanguageModelChatResponse(
@@ -68,7 +71,11 @@ export class DeepLocalProvider implements vscode.LanguageModelChatProvider<DeepL
 
     token.onCancellationRequested(() => this.client.cancel(requestId));
 
-    const tools = config.enableToolCalling ? this.toChatTools(options.tools) : undefined;
+    const information = this.client.modelInformation(model.deeplocalId);
+    if (options.tools?.length && !information.toolCalling) {
+      throw new Error(`${information.reason} Use plain chat for this model.`);
+    }
+    const tools = information.toolCalling ? this.toChatTools(options.tools) : undefined;
     const request = {
       model: model.deeplocalId,
       messages: chatMessages,

@@ -1,5 +1,6 @@
 import { DeepLocalConfig, getConfig } from './config';
 import { Logger } from './logger';
+import { modelInformation } from './model-metadata';
 import {
   ChatCompletionChunk,
   ChatCompletionRequest,
@@ -18,6 +19,21 @@ interface PendingToolCall {
 export class DeepLocalClient {
   private readonly controllers = new Map<string, AbortController>();
   private remoteApiKey = '';
+  private readonly modelMetadata = new Map<string, DeepLocalModel>();
+
+  modelInformation(id: string) {
+    const config = this.configuration();
+    return modelInformation(this.modelMetadata.get(`${config.backend}:${config.baseUrl}:${id}`), config);
+  }
+
+  private rememberModels(models: DeepLocalModel[], config: DeepLocalConfig): DeepLocalModel[] {
+    const prefix = `${config.backend}:${config.baseUrl}:`;
+    for (const key of this.modelMetadata.keys()) {
+      if (key.startsWith(prefix)) this.modelMetadata.delete(key);
+    }
+    for (const model of models) this.modelMetadata.set(`${prefix}${model.id}`, model);
+    return models;
+  }
   private remoteApiKeyProvider: (() => Promise<string | undefined>) | undefined;
 
   constructor(
@@ -35,20 +51,20 @@ export class DeepLocalClient {
       try {
         const response = await this.request('/models', { method: 'GET' });
         const body = await response.json() as ModelsResponse;
-        const models = Array.isArray(body.data) ? body.data.filter((model) => Boolean(model.id)) : [];
+        const models = Array.isArray(body.data) ? body.data.filter((model) => Boolean(model?.id) && typeof model.id === 'string') : [];
         if (models.length) {
-          return config.model && !models.some((model) => model.id === config.model)
+          return this.rememberModels(config.model && !models.some((model) => model.id === config.model)
             ? [{ id: config.model }, ...models]
-            : models;
+            : models, config);
         }
       } catch (error) {
         this.logger.warning(`Remote model discovery failed: ${messageOf(error)}`);
       }
-      return config.model ? [{ id: config.model }] : [];
+      return this.rememberModels(config.model ? [{ id: config.model }] : [], config);
     }
     const response = await this.request('/models', { method: 'GET' });
     const body = await response.json() as ModelsResponse;
-    return Array.isArray(body.data) ? body.data.filter((model) => Boolean(model.id)) : [];
+    return this.rememberModels(Array.isArray(body.data) ? body.data.filter((model) => Boolean(model?.id) && typeof model.id === 'string') : [], config);
   }
 
   async checkConnection(): Promise<boolean> {
@@ -68,6 +84,14 @@ export class DeepLocalClient {
   }
 
   async *streamChat(requestId: string, body: ChatCompletionRequest): AsyncGenerator<StreamEvent> {
+    const information = this.modelInformation(body.model);
+    if (!information.compatible) throw new Error(information.reason);
+    if (body.tools?.length && !information.toolCalling) {
+      throw new Error(`${information.reason} Plain chat remains available.`);
+    }
+    body = body.max_completion_tokens !== undefined
+      ? { ...body, max_completion_tokens: Math.min(body.max_completion_tokens, information.maxOutputTokens) }
+      : { ...body, max_tokens: Math.min(body.max_tokens ?? information.maxOutputTokens, information.maxOutputTokens) };
     const controller = new AbortController();
     this.controllers.set(requestId, controller);
 

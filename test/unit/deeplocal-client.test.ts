@@ -41,7 +41,7 @@ describe('DeepLocalClient', () => {
       { kind: 'text', value: 'hi' },
       { kind: 'toolCall', value: { id: 'call-1', type: 'function', function: { name: 'read', arguments: '{"file":"a"}' } } },
     ]);
-    expect(JSON.parse(server.requests[0].body!)).toEqual(request);
+    expect(JSON.parse(server.requests[0].body!)).toEqual({ ...request, max_tokens: 1024 });
   });
 
   it('parses a final event without a trailing newline', async () => {
@@ -66,7 +66,7 @@ describe('DeepLocalClient', () => {
     expect(events).toEqual([{ kind: 'text', value: 'cr' }]);
   });
 
-  it('preserves streamed text and reports an unexpected EOF', async () => {
+  it('preserves streamed text and reports truncated JSON at EOF', async () => {
     server = await startFakeServer((_req, res) => {
       res.setHeader('content-type', 'text/event-stream');
       res.end('data: {"choices":[{"delta":{"content":"partial"}}]}\n\ndata: {"choices":[{"delta":{"content":"unfinished"');
@@ -75,7 +75,7 @@ describe('DeepLocalClient', () => {
     const events: StreamEvent[] = [];
     await expect(async () => {
       for await (const event of client.streamChat('truncated', request)) events.push(event);
-    }).rejects.toThrow('ended unexpectedly');
+    }).rejects.toThrow('malformed JSON');
     expect(events).toEqual([{ kind: 'text', value: 'partial' }]);
   });
 

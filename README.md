@@ -29,6 +29,22 @@ is the documented fallback because the old format did not record ownership.
 
 ## Requirements
 
+Model discovery preserves optional `/models` hints: `max_input_tokens` (or
+`context_length`), `max_output_tokens`, `capabilities.tool_calling` (or
+`supports_tool_calls`), `protocol`, and `endpoint`. Positive integer limits and
+boolean capability hints override the configured defaults. Missing or invalid
+hints use `deeplocal.maxInputTokens`, `deeplocal.maxOutputTokens`, and
+`deeplocal.enableToolCalling`; disable the latter for a conservative fallback
+when the server provides no tool metadata. The model tooltip explains this
+fallback. Image input remains disabled because this adapter sends text only.
+
+Models explicitly lacking tool support remain available for plain chat; the
+sidebar reports the reason and sends without tools. The adapter supports the
+`openai`, `openai-compatible`, and `chat-completions` protocol hints and the
+`/chat/completions` or `/v1/chat/completions` endpoint hints. Other declared
+protocols/endpoints produce a clear error before sending. Metadata never
+redirects credentials or requests to another URL.
+
 Before using the extension, start the separate local DeepLocal service and keep it running:
 
 ```text

@@ -2,6 +2,13 @@ export interface DeepLocalModel {
   id: string;
   object?: string;
   owned_by?: string;
+  context_length?: unknown;
+  max_input_tokens?: unknown;
+  max_output_tokens?: unknown;
+  capabilities?: unknown;
+  supports_tool_calls?: unknown;
+  protocol?: unknown;
+  endpoint?: unknown;
 }
 
 export interface ModelsResponse {

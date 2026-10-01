@@ -181,6 +181,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   private async sendPrompt(model: string, text: string, useAgent: boolean, editActiveFile: boolean): Promise<void> {
+    const information = this.client.modelInformation(model);
+    if (useAgent && !information.toolCalling) {
+      this.post({ type: 'notice', message: `${information.reason} Sending as plain chat.` });
+      useAgent = false;
+    }
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.activeRequestId = requestId;
     const activeFile = editActiveFile ? getActiveTextFile() : undefined;
