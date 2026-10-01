@@ -57,12 +57,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('deeplocal-chat-adapter.checkConnection', async () => {
       output.show(true);
       const config = getConfig(await context.secrets.get(secretKey) ?? '');
-      logger.info(`Checking ${config.backend === 'remote' ? 'remote API' : 'DeepLocal'} at ${config.baseUrl}`);
-      const ok = await client.checkConnection();
-      if (ok) {
-        vscode.window.showInformationMessage(`${config.backend === 'remote' ? 'Remote API' : 'DeepLocal'} is reachable.`);
+      const result = await client.checkConnectionDetails();
+      if (result.ok) {
+        vscode.window.showInformationMessage(`${config.backend === 'remote' ? 'Remote API' : 'DeepLocal'}: ${result.message} Checked ${result.endpoint}`);
       } else {
-        vscode.window.showWarningMessage(`${config.backend === 'remote' ? 'Remote API' : 'DeepLocal'} is not reachable. Check the endpoint, API key, and model.`);
+        const action = await vscode.window.showWarningMessage(`Connection check failed [${result.category}] at ${result.endpoint}: ${result.message}`, 'Open Settings');
+        if (action === 'Open Settings') await vscode.commands.executeCommand('deeplocal-chat-adapter.openSettings');
       }
     }),
     vscode.commands.registerCommand('deeplocal-chat-adapter.testRemoteRequest', async () => {

@@ -53,6 +53,18 @@ https://github.com/petertzy/deepLocal
 
 ## Backend configuration
 
+**Check Connection** validates the effective `<base URL>/models` endpoint and
+succeeds only for a non-empty `data` array whose entries have non-empty string
+IDs. A configured remote model fallback does not count as a successful check.
+The base URL must use HTTP(S) and contain no embedded credentials, query, or
+fragment; store credentials using the API-key control instead. Diagnostic
+messages distinguish configuration, network, timeout, HTTP, JSON, schema, and
+empty-model failures, show the checked endpoint, and offer **Open Settings**.
+Response bodies, authorization headers, and transport exception details are
+excluded from check diagnostics. The timeout covers both headers and body.
+This check validates model discovery; use **Test Remote API Request** to verify
+remote chat generation separately.
+
 Streamed tool calls are assembled independently by index and delivered in index
 order after completion. Text accompanying tool deltas is preserved. A missing
 index is accepted for a single call or when its ID identifies an existing call;

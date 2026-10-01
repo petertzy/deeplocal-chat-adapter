@@ -2,6 +2,7 @@ import { DeepLocalConfig, getConfig } from './config';
 import { Logger } from './logger';
 import { modelInformation } from './model-metadata';
 import { parseToolInput } from './tool-input';
+import { checkModelsEndpoint, ConnectionResult } from './connection-check';
 import {
   ChatCompletionChunk,
   ChatCompletionRequest,
@@ -69,14 +70,22 @@ export class DeepLocalClient {
   }
 
   async checkConnection(): Promise<boolean> {
+    return (await this.checkConnectionDetails()).ok;
+  }
+
+  async checkConnectionDetails(): Promise<ConnectionResult> {
+    const config = this.configuration();
+    let result: ConnectionResult;
     try {
-      const models = await this.listModels();
-      this.logger.info(`${this.activeBackend()} connection OK. Found ${models.length} model(s).`);
-      return true;
-    } catch (error) {
-      this.logger.warning(`${this.activeBackend()} connection check failed: ${messageOf(error)}`);
-      return false;
+      const key = config.backend === 'remote' ? (await this.remoteApiKeyProvider?.() ?? this.remoteApiKey) : config.apiKey;
+      result = await checkModelsEndpoint(config.baseUrl, key, config.requestTimeout);
+    } catch {
+      result = { ok: false, category: 'configuration', endpoint: '(not checked)', message: 'Could not load API credentials. Configure the API key and retry.' };
     }
+    const message = `[${result.category}] ${result.endpoint}: ${result.message}`;
+    if (result.ok) this.logger.info(message);
+    else this.logger.warning(message);
+    return result;
   }
 
   cancel(requestId: string): void {
