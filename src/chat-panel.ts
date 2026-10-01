@@ -32,12 +32,15 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   private static readonly transcriptKey = 'deeplocal.chat.transcript';
   private static readonly sessionsKey = 'deeplocal.sessions';
   private static readonly activeSessionKey = 'deeplocal.activeSessionId';
+  private static readonly migrationKey = 'deeplocal.sessions.migrated.v1';
 
   private sessions: ChatSession[] = [];
   private activeSessionId: string;
   private activeRequestId: string | undefined;
   private persistTimer: ReturnType<typeof setTimeout> | undefined;
   private view: vscode.WebviewView | undefined;
+  private readonly scopedSessionsKey = `${ChatPanel.sessionsKey}.${workspaceIdentity()}`;
+  private readonly scopedActiveSessionKey = `${ChatPanel.activeSessionKey}.${workspaceIdentity()}`;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -50,7 +53,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     },
   ) {
     this.sessions = this.loadSessions().map(repairTranscript);
-    this.activeSessionId = this.context.globalState.get<string>(ChatPanel.activeSessionKey, this.sessions[0].id);
+    this.activeSessionId = this.context.workspaceState.get<string>(this.scopedActiveSessionKey, this.sessions[0].id);
     if (!this.sessions.some((session) => session.id === this.activeSessionId)) {
       this.activeSessionId = this.sessions[0].id;
     }
@@ -367,8 +370,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     }
     this.sessions.sort((left, right) => right.updatedAt - left.updatedAt);
     this.sessions = this.sessions.slice(0, 20);
-    await this.context.globalState.update(ChatPanel.sessionsKey, this.sessions);
-    await this.context.globalState.update(ChatPanel.activeSessionKey, this.activeSessionId);
+    await this.context.workspaceState.update(this.scopedSessionsKey, this.sessions);
+    await this.context.workspaceState.update(this.scopedActiveSessionKey, this.activeSessionId);
   }
 
   private async deleteSession(sessionId: string | undefined): Promise<void> {
@@ -422,21 +425,35 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   private loadSessions(): ChatSession[] {
-    const sessions = this.context.globalState.get<ChatSession[]>(ChatPanel.sessionsKey, []);
+    const sessions = this.context.workspaceState.get<ChatSession[]>(this.scopedSessionsKey, []);
     if (sessions.length) {
       return sessions;
     }
 
+    // workspaceState is deliberately the source of truth. Migrate the old global
+    // values only when this workspace has no scoped data yet. Since the old
+    // format had no workspace identity, it is assigned to the first workspace
+    // opened after upgrade; the original values are retained for recovery.
+    const oldSessions = this.context.globalState.get<ChatSession[]>(ChatPanel.sessionsKey, []);
     const oldHistory = this.context.globalState.get<ChatMessage[]>(ChatPanel.historyKey, []);
     const oldTranscript = this.context.globalState.get<PersistedChatItem[]>(ChatPanel.transcriptKey, []);
+    const migrated = this.context.globalState.get<boolean>(ChatPanel.migrationKey, false);
+    if (!migrated && oldSessions.length) {
+      void this.context.workspaceState.update(this.scopedSessionsKey, oldSessions);
+      void this.context.globalState.update(ChatPanel.migrationKey, true);
+      return oldSessions;
+    }
     if (oldHistory.length || oldTranscript.length) {
-      return [{
+      const migratedSession = {
         id: createId(),
         title: oldTranscript[0]?.text ? makeTitle(oldTranscript[0].text) : 'Previous session',
         updatedAt: Date.now(),
         history: oldHistory,
         transcript: oldTranscript,
-      }];
+      };
+      void this.context.workspaceState.update(this.scopedSessionsKey, [migratedSession]);
+      void this.context.globalState.update(ChatPanel.migrationKey, true);
+      return [migratedSession];
     }
 
     return [createSession()];
@@ -476,6 +493,16 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     await activeFile.document.save();
     this.post({ type: 'notice', message: 'Applied changes to the active file.' });
   }
+}
+
+/** Stable scope used by persistence and diagnostics. Empty windows intentionally
+ * share one scope because VS Code gives them no durable workspace identity. */
+export function workspaceIdentity(workspace: Pick<typeof vscode.workspace, 'workspaceFile' | 'workspaceFolders'> = vscode.workspace): string {
+  if (workspace.workspaceFile) {
+    return `workspace:${workspace.workspaceFile.toString()}`;
+  }
+  const folders = workspace.workspaceFolders?.map((folder) => folder.uri.toString()).sort();
+  return folders?.length ? `folders:${folders.join('|')}` : 'empty';
 }
 
 interface ActiveTextFile {

@@ -14,6 +14,19 @@
 - Let capable models inspect files, search the workspace, read diagnostics, and propose confirmed edits.
 - Restore recent chat sessions after reloading VS Code.
 
+## Chat session scope
+
+Chat sessions are stored in VS Code `workspaceState`, so each folder or
+multi-root workspace has its own session list and active session. Workspace
+identity is derived from the workspace file when available, otherwise from all
+workspace-folder URIs. Empty windows have no durable VS Code workspace identity
+and therefore intentionally use the shared `empty` scope.
+
+On upgrade, sessions written by versions before workspace scoping are migrated
+once into the first workspace opened. The legacy global values are retained so
+they remain recoverable; later workspaces start with a new session list. This
+is the documented fallback because the old format did not record ownership.
+
 ## Requirements
 
 Before using the extension, start the separate local DeepLocal service and keep it running:
