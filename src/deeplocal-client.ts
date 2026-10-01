@@ -96,10 +96,10 @@ export class DeepLocalClient {
           }
 
           bufferedText += decoder.decode(value, { stream: true });
-          const lines = bufferedText.split(/\r?\n/);
-          bufferedText = lines.pop() ?? '';
+          const split = splitSseLines(bufferedText);
+          bufferedText = split.remainder;
 
-          for (const line of lines) {
+          for (const line of split.lines) {
             if (this.isDoneLine(line)) {
               sawDone = true;
               continue;
@@ -248,6 +248,19 @@ export class DeepLocalClient {
       clearTimeout(timeout);
     }
   }
+}
+
+function splitSseLines(input: string): { lines: string[]; remainder: string } {
+  const lines: string[] = [];
+  let start = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (character !== '\r' && character !== '\n') continue;
+    lines.push(input.slice(start, index));
+    if (character === '\r' && input[index + 1] === '\n') index += 1;
+    start = index + 1;
+  }
+  return { lines, remainder: input.slice(start) };
 }
 
 function remoteCompatibleBody(body: BodyInit): BodyInit {

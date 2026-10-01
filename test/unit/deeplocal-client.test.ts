@@ -55,6 +55,17 @@ describe('DeepLocalClient', () => {
     expect(events).toEqual([{ kind: 'text', value: 'final' }]);
   });
 
+  it('accepts SSE records separated by standalone carriage returns', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.end('data: {"choices":[{"delta":{"content":"cr"}}]}\r\rdata: [DONE]');
+    });
+    const client = new DeepLocalClient(logger, () => config(server!.baseUrl));
+    const events: StreamEvent[] = [];
+    for await (const event of client.streamChat('cr-lines', request)) events.push(event);
+    expect(events).toEqual([{ kind: 'text', value: 'cr' }]);
+  });
+
   it('preserves streamed text and reports an unexpected EOF', async () => {
     server = await startFakeServer((_req, res) => {
       res.setHeader('content-type', 'text/event-stream');
