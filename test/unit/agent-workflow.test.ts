@@ -194,6 +194,36 @@ it('defaults to tools even with an active editor; approvals execute and tool res
   await vi.waitFor(() => expect(harness.sent.filter((message) => message.type === 'assistantDone')).toHaveLength(2));
 });
 
+it('keeps tool-call progress separate from the final answer and persists it before the operation', async () => {
+  const harness = panelHarness([[{ kind: 'text', value: 'I will create the requested file.' }, tool], [{ kind: 'text', value: 'Created snake.html.' }]]);
+  harness.send({ type: 'send', text: 'Create a snake game', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'reasoningDelta')).toBe(true));
+  const progressIndex = harness.sent.findIndex((message) => message.type === 'reasoningDelta');
+  const operationIndex = harness.sent.findIndex((message) => message.type === 'toolStart');
+  expect(progressIndex).toBeLessThan(operationIndex);
+  const approval = harness.sent.find((message) => message.type === 'approval')!;
+  harness.send({ type: 'approval', approvalId: approval.approvalId, approved: true });
+  await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'assistantDone')).toBe(true));
+  const sessions = [...harness.state.values()].find(Array.isArray) as Array<{ transcript: Array<{ role: string; text: string }> }>;
+  const stored = sessions[0].transcript.find((item) => item.role === 'Reasoning');
+  expect(stored?.text).toBe('I will create the requested file.');
+  expect(sessions[0].transcript.map((item) => item.role)).toEqual(['You', 'Reasoning', 'Tool', 'DeepLocal']);
+  expect(sessions[0].transcript.at(-1)?.text).toBe('Created snake.html.');
+});
+
+it('retains partial progress when a model stream fails', async () => {
+  const harness = panelHarness([]);
+  harness.client.streamChat = async function* () {
+    yield { kind: 'text', value: 'I will inspect the workspace.' } as StreamEvent;
+    throw new Error('Stream interrupted');
+  };
+  harness.send({ type: 'send', text: 'Inspect the project', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'assistantDone')).toBe(true));
+  const sessions = [...harness.state.values()].find(Array.isArray) as Array<{ transcript: Array<{ role: string; text: string }> }>;
+  expect(sessions[0].transcript.at(-1)).toEqual({ role: 'Reasoning', text: 'I will inspect the workspace.' });
+  expect(harness.sent.some((message) => message.type === 'assistantFinal')).toBe(false);
+});
+
 it('Stop dismisses approval, prevents writes and new turns, and permits a subsequent task', async () => {
   const secondTool: StreamEvent = { kind: 'toolCall', value: {
     id: 'c2', type: 'function', function: { name: 'create_file', arguments: JSON.stringify({ path: 'other.html', content: 'other' }) },

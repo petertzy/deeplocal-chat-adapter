@@ -11,6 +11,7 @@
 - Use DeepLocal models from VS Code.
 - Chat in the DeepLocal view; move it to the Secondary Side Bar for a right-side layout.
 - Create and edit files by path in the default Agent mode, with inline approval and diff previews.
+- Follow streamed progress updates around Agent tool calls. Updates expand while streaming, collapse before operations, and remain in task history in chronological order; the final answer appears separately. These are model-written action summaries, available when the model emits commentary, rather than hidden internal reasoning.
 - Let capable models inspect files, search the workspace, read diagnostics, and propose confirmed edits.
 - Restore recent chat sessions after reloading VS Code.
 

@@ -53,6 +53,11 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   .action-state { font-size: 10px; padding: 2px 5px; border-radius: 4px; background: var(--vscode-badge-background, #333); color: var(--vscode-badge-foreground, #ddd); }
   .action[data-state="error"] .action-state { color: var(--vscode-errorForeground, #f48771); }
   .action[data-state="success"] .action-state { color: var(--vscode-testing-iconPassed, #73c991); }
+  .reasoning { border-left: 2px solid var(--vscode-progressBar-background, #0078d4); margin: 0 0 9px; padding-left: 9px; }
+  .reasoning summary { cursor: pointer; list-style: none; color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
+  .reasoning summary::-webkit-details-marker { display: none; }
+  .reasoning summary::before { content: '✦'; margin-right: 6px; color: var(--vscode-progressBar-background, #0078d4); }
+  .reasoning .prose { padding: 6px 0 2px; color: var(--vscode-foreground, #ccc); }
   pre { font: 11px/1.55 var(--vscode-editor-font-family, monospace); white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 220px; margin: 0; padding: 10px; background: var(--vscode-textCodeBlock-background, #222); }
   .code { border: 1px solid var(--vscode-panel-border, #ffffff20); border-radius: 5px; margin: 8px 0; }
   .code summary { padding: 7px 9px; font-size: 11px; cursor: pointer; color: var(--vscode-descriptionForeground, #999); }
@@ -148,7 +153,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   const drafts = new Map(Object.entries(saved.drafts || {}));
   const actions = new Map();
   let busy = false, useAgent = saved.useAgent !== false, activeSessionId;
-  let currentAssistant, assistantText = '', pendingPrompt, approvalId, failed = false;
+  let currentAssistant, currentReasoning, assistantText = '', reasoningText = '', pendingPrompt, approvalId, failed = false;
   let selectedModel = saved.model || '', selectedBackend = saved.backend;
   let scheduledRender;
   const welcome = byId('welcome');
@@ -235,6 +240,18 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     item.querySelector('pre').textContent = text ? lines.slice(1).join('\n') : 'Waiting for the tool result…';
     follow(followTail);
   }
+  function addReasoning(text) {
+    const followTail = nearBottom(); welcome.hidden = true;
+    if (!currentReasoning) {
+      currentReasoning = document.createElement('details'); currentReasoning.className = 'reasoning';
+      const summary = document.createElement('summary'); summary.textContent = 'Progress update';
+      const body = document.createElement('div'); body.className = 'prose';
+      currentReasoning.open = busy;
+      currentReasoning.append(summary, body); messages.append(currentReasoning);
+    }
+    currentReasoning.querySelector('.prose').textContent = text;
+    follow(followTail);
+  }
   window.addEventListener('message', event => {
     const msg = event.data;
     if (msg.type === 'models') {
@@ -262,11 +279,24 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       resizePrompt();
     }
     if (msg.type === 'restore') {
+      if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
+      currentReasoning = undefined; reasoningText = ''; currentAssistant = undefined; assistantText = '';
       messages.replaceChildren(welcome); welcome.hidden = msg.items.length > 0; actions.clear();
-      for (const item of msg.items) item.role === 'Tool' ? addTool(item.text, item.activity) : addMessage(item.role, item.text);
+      for (const item of msg.items) {
+        if (item.role === 'Tool') addTool(item.text, item.activity);
+        else if (item.role === 'Reasoning') { currentReasoning = undefined; addReasoning(item.text); currentReasoning = undefined; }
+        else addMessage(item.role, item.text);
+      }
     }
     if (msg.type === 'status') status.textContent = msg.message;
-    if (msg.type === 'toolStart' || msg.type === 'toolResult') addTool(msg.text, msg.activity);
+    if (msg.type === 'toolStart' || msg.type === 'toolResult') {
+      if (msg.type === 'toolStart' && reasoningText) {
+        if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
+        addReasoning(reasoningText);
+        currentReasoning.open = false;
+      }
+      addTool(msg.text, msg.activity);
+    }
     if (msg.type === 'approval') {
       approvalId = msg.approvalId; status.textContent = 'Waiting for your approval';
       byId('reviewTitle').textContent = msg.message; byId('review').hidden = false; byId('preview').hidden = !msg.hasPreview;
@@ -277,7 +307,8 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       status.textContent = msg.approved ? 'Applying approved action…' : 'Action declined';
     }
     if (msg.type === 'assistantStart') {
-      failed = false; assistantText = ''; currentAssistant = addMessage('Agent', ''); setBusy(true); status.textContent = 'Thinking…';
+      failed = false; assistantText = ''; reasoningText = ''; currentReasoning = undefined;
+      currentAssistant = msg.agent ? undefined : addMessage('Agent', ''); setBusy(true); status.textContent = 'Thinking…';
     }
     if (msg.type === 'assistantDelta' && currentAssistant) {
       assistantText += msg.text;
@@ -286,8 +317,21 @@ export function renderChatHtml(webview: { cspSource: string }): string {
         if (currentAssistant) { const tail = nearBottom(); renderBody(currentAssistant, assistantText); follow(tail); }
       });
     }
+    if (msg.type === 'reasoningStart') {
+      if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
+      reasoningText = ''; currentReasoning = undefined;
+    }
+    if (msg.type === 'reasoningDelta') {
+      reasoningText += msg.text;
+      if (!scheduledRender) scheduledRender = requestAnimationFrame(() => {
+        scheduledRender = undefined;
+        if (reasoningText) addReasoning(reasoningText);
+      });
+    }
     if (msg.type === 'assistantFinal') {
       if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
+      currentReasoning?.remove(); currentReasoning = undefined; reasoningText = '';
+      if (!currentAssistant) currentAssistant = addMessage('Agent', '');
       if (currentAssistant) {
         const tail = nearBottom(); assistantText = msg.text; renderBody(currentAssistant, assistantText);
         messages.append(currentAssistant.parentElement); follow(tail);
@@ -295,10 +339,11 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     }
     if (msg.type === 'assistantDone') {
       if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
+      if (reasoningText) addReasoning(reasoningText);
       if (currentAssistant && assistantText) renderBody(currentAssistant, assistantText);
       if (currentAssistant && !assistantText.trim()) currentAssistant.parentElement.remove();
       if (pendingPrompt !== undefined && prompt.value.trim() === pendingPrompt && !failed) { prompt.value = ''; drafts.delete(activeSessionId); }
-      pendingPrompt = undefined; setBusy(false); currentAssistant = undefined;
+      pendingPrompt = undefined; setBusy(false); currentAssistant = undefined; currentReasoning = undefined;
       status.textContent = msg.outcome === 'cancelled' ? 'Stopped · Applied changes kept' : failed || msg.outcome === 'error' ? 'Needs attention' : msg.outcome === 'success' ? 'Task completed' : 'Ready';
       remember(); resizePrompt();
     }

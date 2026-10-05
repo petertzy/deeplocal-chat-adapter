@@ -78,6 +78,27 @@ test('folds source code safely while streaming and keeps approval controls visib
   await page.screenshot({ path: testInfo.outputPath('completed-dark.png') });
 });
 
+test('shows concise progress before its operation and keeps it collapsible', async ({ page }) => {
+  await dispatch(page, { type: 'assistantStart', agent: true });
+  await dispatch(page, { type: 'reasoningStart' });
+  await dispatch(page, { type: 'reasoningDelta', text: 'I will inspect the existing configuration before changing it.' });
+  await dispatch(page, { type: 'toolStart', activity: { id: 'read1', title: 'Read file', detail: 'src/config.ts', state: 'running' } });
+  const progress = page.locator('.reasoning');
+  await expect(progress).toContainText('Progress update');
+  await expect(progress).toContainText('inspect the existing configuration');
+  await expect(progress).not.toHaveAttribute('open');
+  expect(await progress.evaluate(node => Boolean(node.compareDocumentPosition(document.querySelector('.action')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  await progress.locator('summary').click();
+  await expect(progress.locator('.prose')).toBeVisible();
+  await dispatch(page, { type: 'reasoningStart' });
+  await dispatch(page, { type: 'reasoningDelta', text: 'The configuration is ready.' });
+  await dispatch(page, { type: 'assistantFinal', text: 'The configuration is ready.' });
+  await dispatch(page, { type: 'assistantDone', outcome: 'success' });
+  await expect(page.locator('.reasoning')).toHaveCount(1);
+  await expect(page.locator('.assistant')).toHaveText('AgentThe configuration is ready.');
+  await expect(page.locator('.reasoning')).not.toContainText('The configuration is ready.');
+});
+
 test('preserves model selection, supports Chat mode and does not submit IME composition', async ({ page }) => {
   await page.locator('#model').selectOption('local-model');
   await dispatch(page, { type: 'models', models: ['gpt-6-luna', 'local-model'], backend: 'remote', hasApiKey: true });
@@ -94,6 +115,31 @@ test('preserves model selection, supports Chat mode and does not submit IME comp
   await dispatch(page, { type: 'assistantDone', outcome: 'cancelled' });
   await expect(page.locator('#status')).toContainText('Stopped');
   await expect(page.locator('#stop')).toBeHidden();
+});
+
+test('preserves progress across multiple operations, interruption and history restore', async ({ page }) => {
+  await dispatch(page, { type: 'assistantStart', agent: true });
+  // Deliver boundaries within one frame to catch pending-render ordering bugs.
+  await page.evaluate(() => {
+    for (const data of [
+      { type: 'reasoningStart' },
+      { type: 'reasoningDelta', text: 'Inspecting the file.' },
+      { type: 'toolStart', activity: { id: 'one', title: 'Read file', state: 'running' } },
+      { type: 'reasoningStart' },
+      { type: 'reasoningDelta', text: 'Checking the result. <script>unsafe()</script>' },
+      { type: 'assistantDone', outcome: 'cancelled' },
+    ]) window.dispatchEvent(new MessageEvent('message', { data }));
+  });
+  await expect(page.locator('.reasoning .prose')).toHaveText(['Inspecting the file.', 'Checking the result. <script>unsafe()</script>']);
+  await expect(page.locator('#messages script')).toHaveCount(0);
+  await expect(page.locator('#status')).toContainText('Stopped');
+  await dispatch(page, { type: 'restore', items: [
+    { role: 'Reasoning', text: 'Inspecting the file.' },
+    { role: 'Tool', text: 'read_file\nRead file.', activity: { id: 'one', title: 'Read file', state: 'success' } },
+    { role: 'Reasoning', text: 'Checking the result.' },
+  ] });
+  await expect(page.locator('#messages > details')).toHaveClass(['reasoning', 'action', 'reasoning']);
+  await expect(page.locator('.reasoning[open]')).toHaveCount(0);
 });
 
 test('restores action states and folds historical code in a light theme', async ({ page }, testInfo) => {

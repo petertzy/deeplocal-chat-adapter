@@ -18,7 +18,7 @@ interface WebviewMessage {
 }
 
 interface PersistedChatItem {
-  role: 'You' | 'DeepLocal' | 'Tool';
+  role: 'You' | 'DeepLocal' | 'Tool' | 'Reasoning';
   text: string;
   activity?: ToolActivity;
 }
@@ -226,7 +226,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       session.transcript.push(assistantItem);
       await this.persist();
 
-      this.post({ type: 'assistantStart' });
+      this.post({ type: 'assistantStart', agent: useAgent });
 
       const messages = [...session.history];
       if ((useAgent || getConfig().injectSystemPrompt) && messages[0]?.role !== 'system') {
@@ -241,7 +241,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
             'Use delete_file only when the user explicitly requests deletion; it moves a single file to the trash after approval. Never delete files as an incidental cleanup step.',
             'Use get_active_file and get_selection before editing the active editor when relevant.',
             'Use get_diagnostics after edits when the user asks you to fix errors.',
-            'Prefer small targeted edits. Explain what changed after tools finish.',
+            'Prefer small targeted edits. Before each group of tool calls, give a brief user-visible progress update (one or two sentences) describing what you are about to inspect or change and why. After tools return, summarize relevant findings and the next step. These are concise action summaries, not private chain-of-thought or hidden reasoning. Explain what changed after tools finish.',
             'Ask before destructive work; file write and command tools already require user confirmation.',
             'After creating a file, use open_file if appropriate. Check diagnostics or run relevant tests. Report whether verification actually ran.',
             'If a tool fails or is declined, respect that result and never claim that the action succeeded. Answer in the user’s language.',
@@ -257,7 +257,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       };
       controller.signal.throwIfAborted();
       answer = useAgent
-        ? await this.runAgentRequest(requestId, model, messages, onDelta, controller.signal, session)
+        ? await this.runAgentRequest(requestId, model, messages, onDelta, controller.signal, session, assistantItem)
         : await this.runChatRequest(requestId, model, messages, onDelta);
       controller.signal.throwIfAborted();
 
@@ -272,6 +272,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       this.postSessions();
     } catch (error) {
       outcome = controller.signal.aborted ? 'cancelled' : 'error';
+      if (useAgent && assistantItem.text.trim()) assistantItem.role = 'Reasoning';
       if (controller.signal.aborted) {
         this.post({ type: 'notice', message: 'Task stopped. Already applied changes are retained.' });
       } else {
@@ -319,13 +320,17 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     onDelta: (delta: string) => void,
     signal: AbortSignal,
     session: ChatSession,
+    assistantItem: PersistedChatItem,
   ): Promise<string> {
     const workingMessages = [...messages];
     let finalAnswer = '';
 
     for (let turn = 0; turn < getConfig().agentMaxTurns; turn += 1) {
       signal.throwIfAborted();
+      session.transcript = session.transcript.filter((item) => item !== assistantItem);
+      session.transcript.push(assistantItem);
       this.post({ type: 'status', message: `Working · step ${turn + 1}/${getConfig().agentMaxTurns}` });
+      this.post({ type: 'reasoningStart' });
       let answer = '';
       const toolCalls: ToolCall[] = [];
 
@@ -340,7 +345,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         if (event.kind === 'text') {
           answer += event.value;
           onDelta(event.value);
-          this.post({ type: 'assistantDelta', text: event.value });
+          // Tool-call text is a user-visible progress update, shown before the
+          // operation it describes instead of being mixed into the final reply.
+          this.post({ type: 'reasoningDelta', text: event.value });
         } else {
           toolCalls.push(event.value);
         }
@@ -351,6 +358,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         if (!finalAnswer.trim()) throw new Error('The model returned no answer or tool actions. Retry or choose another model.');
         break;
       }
+
+      if (answer.trim()) {
+        session.transcript.push({ role: 'Reasoning', text: answer });
+      }
+      assistantItem.text = '';
 
       workingMessages.push({
         role: 'assistant',
