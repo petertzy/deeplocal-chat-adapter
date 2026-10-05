@@ -12,6 +12,8 @@
 - Chat in the DeepLocal view; move it to the Secondary Side Bar for a right-side layout.
 - Create and edit files by path in the default Agent mode, with inline approval and diff previews.
 - Follow streamed progress updates around Agent tool calls. Updates expand while streaming, collapse before operations, and remain in task history in chronological order; the final answer appears separately. These are model-written action summaries, available when the model emits commentary, rather than hidden internal reasoning.
+- Display provider reasoning summaries separately when using a compatible Responses API model, in both Agent and Chat modes.
+- Follow Chinese/English prompts with localized sidebar controls, progress labels, operation titles and approval prompts, or choose a fixed display language.
 - Let capable models inspect files, search the workspace, read diagnostics, and propose confirmed edits.
 - Restore recent chat sessions after reloading VS Code.
 
@@ -53,6 +55,45 @@ Choose Chat mode for discussion without tools. This workflow follows
 it does not include Cline's checkpoints, browser automation, or background terminals.
 HTML files open in the editor; open the saved file in a browser to play the game.
 
+## Reasoning summaries and display language
+
+Open the sidebar **Settings → API protocol** and select **Responses** for a
+provider/model that supports `/responses`. Leave **Reasoning summaries** enabled
+to request `reasoning.summary: "auto"`. This uses the same streaming inference
+request as the answer and tool calls; there is no second summarization request.
+The sidebar shows separate **Reasoning summary**, **Progress update**, tool
+activity and final-answer entries. Summaries remain available in history and
+partial summaries survive cancellation or stream errors. Providers may return
+no summary, even when one was requested; the UI does not invent one.
+
+Chat Completions remains the default for existing local and remote setups.
+If a Responses model rejects summaries, turn summaries **Off**. If the service
+does not implement Responses, select **Chat Completions** to keep the existing
+progress-and-tools workflow. Errors explain these choices; requests are not
+silently retried against another endpoint. The settings are
+`deeplocal.apiMode`, `deeplocal.remote.apiMode` and `deeplocal.reasoningSummary`.
+Summary rendering is a sidebar feature; the VS Code language-model provider
+continues to emit its standard text and tool-call parts.
+
+Responses requests use `store: false` and replay complete output items,
+including encrypted reasoning state and assistant phases, for continued tool
+use. These items are retained in the workspace's chat history and sent back
+only to the same backend URL/model. They are not displayed or logged. Changing
+provider/model keeps ordinary messages and tool results but omits that opaque
+state. The adapter displays only provider summary text, not raw reasoning
+events. See [OpenAI's reasoning summary documentation](https://developers.openai.com/api/docs/guides/reasoning#reasoning-summaries).
+
+**Display language → Follow prompt** detects Chinese or English from the latest
+question. Short or ambiguous prompts retain the session language, initially
+using VS Code's language (Chinese or English fallback). Choose **English** or
+**Simplified Chinese** to override detection (`deeplocal.displayLanguage`).
+Other interface languages are not yet translated. Model progress and answers
+are prompted to follow the user's language, including languages beyond these
+two. Provider summaries are shown as received; their language is controlled by
+the model and is not guaranteed. Code, paths, model IDs, raw tool output and
+provider diagnostics are kept verbatim. The language control changes interface
+copy, not the content of previous messages.
+
 ## Chat session scope
 
 Chat sessions are stored in VS Code `workspaceState`, so each folder or
@@ -79,8 +120,9 @@ fallback. Image input remains disabled because this adapter sends text only.
 
 Models explicitly lacking tool support remain available for plain chat; the
 sidebar reports the reason and asks you to select Chat mode or a tool-capable model. The adapter supports the
-`openai`, `openai-compatible`, and `chat-completions` protocol hints and the
-`/chat/completions` or `/v1/chat/completions` endpoint hints. Other declared
+`openai` and `openai-compatible` protocol hints, plus the selected
+`chat-completions` or `responses` protocol. Endpoint hints must match the selected
+API mode (`/chat/completions` or `/responses`, optionally prefixed with `/v1`). Other declared
 protocols/endpoints produce a clear error before sending. Metadata never
 redirects credentials or requests to another URL.
 

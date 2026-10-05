@@ -3,12 +3,16 @@ import { getAgentTools, invokeAgentTool, toolResultsToMessages } from './agent-t
 import { getConfig } from './config';
 import { DeepLocalClient } from './deeplocal-client';
 import { Logger } from './logger';
-import { ChatMessage, ToolCall } from './protocol';
+import { ChatMessage, ToolCall, ResponseContext, StreamEvent } from './protocol';
+import { detectLanguage, DisplayLanguage } from './chat-language';
 import { renderChatHtml } from './chat-webview';
 import { toolActivity, ToolActivity } from './tool-activity';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey';
+  type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey' | 'setLanguage' | 'setApiMode' | 'setSummary';
+  apiMode?: 'chat-completions' | 'responses';
+  summary?: 'off' | 'auto';
+  language?: 'auto' | DisplayLanguage;
   approvalId?: string;
   approved?: boolean;
   text?: string;
@@ -18,7 +22,8 @@ interface WebviewMessage {
 }
 
 interface PersistedChatItem {
-  role: 'You' | 'DeepLocal' | 'Tool' | 'Reasoning';
+  role: 'You' | 'DeepLocal' | 'Tool' | 'Reasoning' | 'Summary';
+  id?: string;
   text: string;
   activity?: ToolActivity;
 }
@@ -29,6 +34,7 @@ interface ChatSession {
   updatedAt: number;
   history: ChatMessage[];
   transcript: PersistedChatItem[];
+  language?: DisplayLanguage;
 }
 
 export class ChatPanel implements vscode.WebviewViewProvider {
@@ -103,6 +109,22 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       return;
     }
     if (this.activeRequestId) return;
+    if (message.type === 'setLanguage' && ['auto', 'en', 'zh-CN'].includes(message.language ?? '')) {
+      await vscode.workspace.getConfiguration('deeplocal').update('displayLanguage', message.language, vscode.ConfigurationTarget.Global);
+      this.postLanguage();
+      return;
+    }
+    if (message.type === 'setApiMode' && ['chat-completions', 'responses'].includes(message.apiMode ?? '')) {
+      const key = getConfig().backend === 'remote' ? 'remote.apiMode' : 'apiMode';
+      await vscode.workspace.getConfiguration('deeplocal').update(key, message.apiMode, vscode.ConfigurationTarget.Global);
+      await this.sendModels();
+      return;
+    }
+    if (message.type === 'setSummary' && ['off', 'auto'].includes(message.summary ?? '')) {
+      await vscode.workspace.getConfiguration('deeplocal').update('reasoningSummary', message.summary, vscode.ConfigurationTarget.Global);
+      await this.sendModels();
+      return;
+    }
     if (message.type === 'setBackend') {
       const selected = await vscode.window.showQuickPick([
         { label: 'Local DeepLocal', description: 'http://127.0.0.1:14567/v1', value: 'local' },
@@ -139,6 +161,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       return;
     }
     if (message.type === 'ready' || message.type === 'refreshModels') {
+      this.postLanguage();
       await this.sendModels();
       this.postSessions();
       this.restoreTranscript();
@@ -186,6 +209,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         backend: getConfig().backend,
         hasApiKey: getConfig().backend === 'remote' ? Boolean(await this.remoteApiKey.get()) : false,
         baseUrl: getConfig().baseUrl,
+        apiMode: getConfig().apiMode ?? 'chat-completions',
+        reasoningSummary: getConfig().reasoningSummary ?? 'auto',
       });
     } catch (error) {
       this.postError(`Failed to load ${getConfig().backend === 'remote' ? 'remote' : 'DeepLocal'} models: ${messageOf(error)}`);
@@ -193,6 +218,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   private async sendPrompt(model: string, text: string, useAgent: boolean): Promise<void> {
+    const session = this.activeSession();
+    session.language = detectLanguage(text, getConfig().displayLanguage, session.language ?? (vscode.env?.language?.startsWith('zh') ? 'zh-CN' : 'en'));
+    this.postLanguage(text);
     const information = this.client.modelInformation(model);
     if (useAgent && !information.toolCalling) {
       this.postError(`${information.reason} Select a tool-capable model for Agent mode, or choose Chat mode.`);
@@ -209,8 +237,24 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     const controller = new AbortController();
     this.taskController = controller;
     const userMessage = text;
-    const session = this.activeSession();
     const assistantItem: PersistedChatItem = { role: 'DeepLocal', text: '' };
+    let finalContext: ResponseContext | undefined;
+    const onContext = (context: ResponseContext) => { finalContext = context; };
+    const summaries = new Map<string, PersistedChatItem>();
+    const onSummary = (event: Extract<StreamEvent, { kind: 'summary' }>) => {
+      controller.signal.throwIfAborted();
+      const id = `${requestId}:${event.id}`;
+      let item = summaries.get(id);
+      if (!item) {
+        item = { role: 'Summary', id, text: '' };
+        summaries.set(id, item);
+        session.transcript.push(item);
+      }
+      item.text += event.value;
+      this.post({ type: 'summaryDelta', id, text: event.value });
+      session.updatedAt = Date.now();
+      this.schedulePersist();
+    };
     let answer = '';
     let outcome: 'success' | 'error' | 'cancelled' = 'success';
     try {
@@ -234,6 +278,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
           role: 'system',
           content: [
             'You are DeepLocal, a coding assistant inside VS Code.',
+            'Use the language of the latest user request for progress updates, explanations, and the final answer. Respect explicit requests for a different response language. Keep code, paths and command output unchanged.',
             useAgent ? 'You are in Agent mode. Execute requested work using tools, then report actual results. Do not print full file contents in chat when asked to implement something.' : 'You are in Chat mode. Explain and discuss; no file changes or commands are available.',
             'Inspect the workspace before changing files. Paths are relative to the workspace root.',
             'When asked to create a new file, use create_file with an appropriate new path. Never replace the active file merely because it is open.',
@@ -257,11 +302,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       };
       controller.signal.throwIfAborted();
       answer = useAgent
-        ? await this.runAgentRequest(requestId, model, messages, onDelta, controller.signal, session, assistantItem)
-        : await this.runChatRequest(requestId, model, messages, onDelta);
+        ? await this.runAgentRequest(requestId, model, messages, onDelta, controller.signal, session, assistantItem, onSummary, onContext)
+        : await this.runChatRequest(requestId, model, messages, onDelta, onSummary, onContext);
       controller.signal.throwIfAborted();
 
-      session.history.push({ role: 'assistant', content: answer });
+      session.history.push({ role: 'assistant', content: answer, ...(finalContext ? { responseContext: finalContext } : {}) });
       assistantItem.text = answer;
       // Keep the final summary after the actions in both live and restored views.
       session.transcript = session.transcript.filter((item) => item !== assistantItem);
@@ -272,7 +317,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       this.postSessions();
     } catch (error) {
       outcome = controller.signal.aborted ? 'cancelled' : 'error';
-      if (useAgent && assistantItem.text.trim()) assistantItem.role = 'Reasoning';
+      if (useAgent && assistantItem.text.trim()) {
+        assistantItem.role = 'Reasoning';
+        session.transcript = session.transcript.filter((item) => item !== assistantItem);
+        session.transcript.push(assistantItem);
+      }
       if (controller.signal.aborted) {
         this.post({ type: 'notice', message: 'Task stopped. Already applied changes are retained.' });
       } else {
@@ -295,6 +344,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     model: string,
     messages: ChatMessage[],
     onDelta: (delta: string) => void,
+    onSummary: (event: Extract<StreamEvent, { kind: 'summary' }>) => void,
+    onContext: (context: ResponseContext) => void,
   ): Promise<string> {
     let answer = '';
     for await (const event of this.client.streamChat(requestId, {
@@ -303,6 +354,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       stream: true,
       max_tokens: getConfig().maxOutputTokens,
     })) {
+      if (event.kind === 'summary') onSummary(event);
+      if (event.kind === 'responseContext') onContext(event.value);
       if (event.kind !== 'text') {
         continue;
       }
@@ -321,6 +374,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     signal: AbortSignal,
     session: ChatSession,
     assistantItem: PersistedChatItem,
+    onSummary: (event: Extract<StreamEvent, { kind: 'summary' }>) => void,
+    onContext: (context: ResponseContext) => void,
   ): Promise<string> {
     const workingMessages = [...messages];
     let finalAnswer = '';
@@ -332,6 +387,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       this.post({ type: 'status', message: `Working · step ${turn + 1}/${getConfig().agentMaxTurns}` });
       this.post({ type: 'reasoningStart' });
       let answer = '';
+      let responseContext: ResponseContext | undefined;
       const toolCalls: ToolCall[] = [];
 
       for await (const event of this.client.streamChat(requestId, {
@@ -348,12 +404,17 @@ export class ChatPanel implements vscode.WebviewViewProvider {
           // Tool-call text is a user-visible progress update, shown before the
           // operation it describes instead of being mixed into the final reply.
           this.post({ type: 'reasoningDelta', text: event.value });
-        } else {
+        } else if (event.kind === 'toolCall') {
           toolCalls.push(event.value);
+        } else if (event.kind === 'summary') {
+          onSummary(event);
+        } else if (event.kind === 'responseContext') {
+          responseContext = event.value;
         }
       }
 
       if (!toolCalls.length) {
+        if (responseContext) onContext(responseContext);
         finalAnswer = answer;
         if (!finalAnswer.trim()) throw new Error('The model returned no answer or tool actions. Retry or choose another model.');
         break;
@@ -368,6 +429,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         role: 'assistant',
         content: answer || null,
         tool_calls: toolCalls,
+        ...(responseContext ? { responseContext } : {}),
       });
 
       const results = [];
@@ -435,8 +497,17 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   private restoreTranscript(): void {
+    this.postLanguage();
     const session = repairTranscript(this.activeSession());
     this.post({ type: 'restore', items: session.transcript });
+  }
+
+  private postLanguage(prompt?: string): void {
+    const preference = getConfig().displayLanguage ?? 'auto';
+    const session = this.activeSession();
+    const latestPrompt = [...session.history].reverse().find(message => message.role === 'user')?.content ?? '';
+    const language = detectLanguage(prompt ?? latestPrompt, preference, session.language ?? (vscode.env?.language?.startsWith('zh') ? 'zh-CN' : 'en'));
+    this.post({ type: 'language', language, preference });
   }
 
   private postSessions(): void {

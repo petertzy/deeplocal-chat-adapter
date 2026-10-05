@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { chineseUi } from './chat-language';
 
 /** Self-contained webview: no remote assets, HTML from models, or inline handlers. */
 export function renderChatHtml(webview: { cspSource: string }): string {
@@ -138,7 +139,10 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   </section>
   <section id="settingsPanel" class="sheet" aria-label="Settings" hidden>
     <div class="sheet-title">Connection settings<button class="icon" data-close="settingsPanel" aria-label="Close settings">×</button></div>
+    <div class="setting"><label for="displayLanguage">Display language</label><select id="displayLanguage"><option value="auto">Follow prompt</option><option value="en">English</option><option value="zh-CN">Simplified Chinese</option></select></div>
     <div class="setting"><label>Provider</label><div class="setting-row"><span id="backendLabel">Local DeepLocal</span><button id="backendButton" class="secondary">Change</button></div><small id="endpoint"></small></div>
+    <div class="setting"><label for="apiMode">API protocol</label><select id="apiMode"><option value="chat-completions">Chat Completions</option><option value="responses">Responses</option></select><small>Responses requires a compatible endpoint and model. Chat Completions keeps progress updates without separate summaries.</small></div>
+    <div class="setting"><label for="reasoningSummary">Reasoning summaries</label><select id="reasoningSummary"><option value="auto">Request when supported</option><option value="off">Off</option></select></div>
     <div class="setting" id="remoteKeyRow" hidden><label>API key · Secure storage</label><small id="remoteKeyStatus"></small><div class="setting-row"><button id="setRemoteKeyButton" class="secondary">Set API key</button><button id="clearRemoteKeyButton" class="secondary">Clear key</button></div></div>
     <div class="setting"><label>Available models</label><button id="refresh" class="secondary">Refresh models</button></div>
     <small>Agent mode requires a model with tool calling. File changes and commands need approval. Deletions move individual files to the trash. Chat mode never edits files.</small>
@@ -152,12 +156,54 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   const saved = vscode.getState() || {};
   const drafts = new Map(Object.entries(saved.drafts || {}));
   const actions = new Map();
+  const summaries = new Map();
+  const chineseUi = ${JSON.stringify(chineseUi).replace(/</g, '\\u003c')};
+  let language = saved.language || 'en';
+  const originalCopy = new WeakMap();
+  function translate(text) {
+    if (language !== 'zh-CN') return text;
+    if (chineseUi[text]) return chineseUi[text];
+    if (/^Working · step \d+\/\d+$/.test(text)) return text.replace('Working · step ', '执行中 · 步骤 ');
+    if (/^(Create|Edit) .+ \(\d+ lines\)$/.test(text)) return text.replace(/^Create /, '创建 ').replace(/^Edit /, '编辑 ').replace(/ \((\d+) lines\)$/, '（$1 行）');
+    if (/^Delete .+ \(move to trash\)$/.test(text)) return text.replace(/^Delete /, '删除 ').replace(' (move to trash)', '（移至回收站）');
+    if (text.startsWith('Run command: ')) return '运行命令：' + text.slice('Run command: '.length);
+    if (/^(Code|Long response)( · .*?)? · \d+ lines · expand$/.test(text)) return text.replace(/^Code/, '代码').replace(/^Long response/, '长回复').replace(' lines · expand', ' 行 · 展开');
+    const operation = Object.keys(chineseUi).find(key => text.startsWith(key + ' · '));
+    if (operation) return chineseUi[operation] + text.slice(operation.length);
+    return text;
+  }
+  function localizeUi() {
+    document.documentElement.lang = language;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      // Never translate generated prose, source, paths, user titles or model IDs.
+      if (node.parentElement.closest('script, .prose, pre, .action-path, #taskTitle, #model, #session')) continue;
+      const previous = originalCopy.get(node);
+      const source = previous && node.textContent === previous.translated ? previous.source : node.textContent;
+      const translated = source.replace(/\S[\s\S]*\S|\S/, value => translate(value));
+      originalCopy.set(node, { source, translated });
+      if (node.textContent !== translated) node.textContent = translated;
+    }
+    for (const node of document.querySelectorAll('[aria-label], [placeholder], button[title]')) {
+      for (const attr of ['aria-label', 'placeholder', 'title']) {
+        if (!node.hasAttribute(attr)) continue;
+        const key = 'original-' + attr;
+        const previous = node.getAttribute('data-' + key);
+        const value = node.getAttribute(attr);
+        const source = previous && value === translate(previous) ? previous : (previous && Object.values(chineseUi).includes(value) ? previous : value);
+        node.setAttribute('data-' + key, source);
+        if (value !== translate(source)) node.setAttribute(attr, translate(source));
+      }
+    }
+  }
+  new MutationObserver(localizeUi).observe(document.body, { subtree: true, childList: true, characterData: true });
   let busy = false, useAgent = saved.useAgent !== false, activeSessionId;
   let currentAssistant, currentReasoning, assistantText = '', reasoningText = '', pendingPrompt, approvalId, failed = false;
   let selectedModel = saved.model || '', selectedBackend = saved.backend;
   let scheduledRender;
   const welcome = byId('welcome');
-  function remember() { vscode.setState({ drafts: Object.fromEntries(drafts), model: model.value, backend: selectedBackend, useAgent }); }
+  function remember() { vscode.setState({ drafts: Object.fromEntries(drafts), model: model.value, backend: selectedBackend, useAgent, language }); }
   function nearBottom() { return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 90; }
   function follow(wasNear) { if (wasNear) messages.scrollTop = messages.scrollHeight; }
   function syncSend() { send.disabled = busy || !model.value || !prompt.value.trim(); }
@@ -165,7 +211,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   function setBusy(value) {
     busy = value;
     byId('shell').dataset.busy = String(value);
-    for (const id of ['session', 'newSession', 'deleteSession', 'historyButton', 'backendButton', 'refresh', 'model', 'agentMode', 'chatMode', 'setRemoteKeyButton', 'clearRemoteKeyButton']) byId(id).disabled = value;
+    for (const id of ['session', 'newSession', 'deleteSession', 'historyButton', 'backendButton', 'refresh', 'model', 'agentMode', 'chatMode', 'setRemoteKeyButton', 'clearRemoteKeyButton', 'displayLanguage', 'apiMode', 'reasoningSummary']) byId(id).disabled = value || (id === 'reasoningSummary' && byId('apiMode').value !== 'responses');
     send.hidden = value; stop.hidden = !value; stop.disabled = false; syncSend();
   }
   function setMode(agent) {
@@ -212,7 +258,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     const followTail = nearBottom(); welcome.hidden = true;
     const item = document.createElement('section'); item.className = 'message ' + (className || (role === 'You' ? 'user' : 'assistant'));
     const label = document.createElement('div'); label.className = 'role'; label.textContent = role;
-    const body = document.createElement('div'); renderBody(body, text);
+    const body = document.createElement('div'); renderBody(body, role === 'Note' || className === 'error' ? translate(text) : text);
     item.append(label, body); messages.append(item); follow(followTail); return body;
   }
   function addTool(text, activity) {
@@ -252,9 +298,35 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     currentReasoning.querySelector('.prose').textContent = text;
     follow(followTail);
   }
+  function addSummary(id, text, append = true) {
+    const tail = nearBottom(); welcome.hidden = true;
+    let entry = summaries.get(id);
+    if (!entry) {
+      const item = document.createElement('details'); item.className = 'reasoning summary-block'; item.open = busy;
+      const label = document.createElement('summary'); label.textContent = 'Reasoning summary';
+      const body = document.createElement('div'); body.className = 'summary-body';
+      item.append(label, body); messages.append(item);
+      entry = { item, body, text: '', active: busy }; summaries.set(id, entry);
+    }
+    entry.text = append ? entry.text + text : text;
+    renderBody(entry.body, entry.text); follow(tail);
+  }
+  function finishSummaries() {
+    for (const entry of summaries.values()) {
+      if (entry.active) { entry.item.open = false; entry.active = false; }
+    }
+  }
   window.addEventListener('message', event => {
     const msg = event.data;
+    if (msg.type === 'language') {
+      language = msg.language === 'zh-CN' ? 'zh-CN' : 'en';
+      byId('displayLanguage').value = msg.preference || 'auto'; localizeUi(); remember();
+    }
+    if (msg.type === 'summaryDelta') addSummary(msg.id, msg.text);
     if (msg.type === 'models') {
+      byId('apiMode').value = msg.apiMode || 'chat-completions';
+      byId('reasoningSummary').value = msg.reasoningSummary || 'auto';
+      byId('reasoningSummary').disabled = busy || byId('apiMode').value !== 'responses';
       const remote = msg.backend === 'remote';
       if (selectedBackend && selectedBackend !== msg.backend) selectedModel = '';
       selectedBackend = msg.backend;
@@ -281,15 +353,17 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     if (msg.type === 'restore') {
       if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
       currentReasoning = undefined; reasoningText = ''; currentAssistant = undefined; assistantText = '';
-      messages.replaceChildren(welcome); welcome.hidden = msg.items.length > 0; actions.clear();
+      messages.replaceChildren(welcome); welcome.hidden = msg.items.length > 0; actions.clear(); summaries.clear();
       for (const item of msg.items) {
         if (item.role === 'Tool') addTool(item.text, item.activity);
+        else if (item.role === 'Summary') addSummary(item.id || 'restored-' + summaries.size, item.text, false);
         else if (item.role === 'Reasoning') { currentReasoning = undefined; addReasoning(item.text); currentReasoning = undefined; }
         else addMessage(item.role, item.text);
       }
     }
     if (msg.type === 'status') status.textContent = msg.message;
     if (msg.type === 'toolStart' || msg.type === 'toolResult') {
+      if (msg.type === 'toolStart') finishSummaries();
       if (msg.type === 'toolStart' && reasoningText) {
         if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
         addReasoning(reasoningText);
@@ -311,6 +385,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       currentAssistant = msg.agent ? undefined : addMessage('Agent', ''); setBusy(true); status.textContent = 'Thinking…';
     }
     if (msg.type === 'assistantDelta' && currentAssistant) {
+      if (!assistantText) messages.append(currentAssistant.parentElement);
       assistantText += msg.text;
       if (!scheduledRender) scheduledRender = requestAnimationFrame(() => {
         scheduledRender = undefined;
@@ -338,6 +413,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       }
     }
     if (msg.type === 'assistantDone') {
+      finishSummaries();
       if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
       if (reasoningText) addReasoning(reasoningText);
       if (currentAssistant && assistantText) renderBody(currentAssistant, assistantText);
@@ -365,6 +441,9 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   model.addEventListener('change', () => { selectedModel = model.value; model.title = model.value; remember(); syncSend(); });
   byId('agentMode').addEventListener('click', () => { setMode(true); remember(); });
   byId('chatMode').addEventListener('click', () => { setMode(false); remember(); });
+  byId('displayLanguage').addEventListener('change', () => vscode.postMessage({ type: 'setLanguage', language: byId('displayLanguage').value }));
+  byId('apiMode').addEventListener('change', () => vscode.postMessage({ type: 'setApiMode', apiMode: byId('apiMode').value }));
+  byId('reasoningSummary').addEventListener('change', () => vscode.postMessage({ type: 'setSummary', summary: byId('reasoningSummary').value }));
   for (const [id, panel] of [['historyButton', 'historyPanel'], ['settingsButton', 'settingsPanel']]) byId(id).addEventListener('click', () => toggleSheet(panel, byId(panel).hidden));
   for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => { const id = button.dataset.close; toggleSheet('', false); byId(id === 'historyPanel' ? 'historyButton' : 'settingsButton').focus(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') { toggleSheet('', false); prompt.focus(); } });
@@ -374,7 +453,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     vscode.postMessage({ type, approvalId, approved });
     if (type === 'approval') for (const action of ['preview', 'approve', 'reject']) byId(action).disabled = true;
   });
-  setMode(useAgent); vscode.postMessage({ type: 'ready' });
+  setMode(useAgent); localizeUi(); vscode.postMessage({ type: 'ready' });
 </script>
 </body>
 </html>`;

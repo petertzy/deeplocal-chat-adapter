@@ -62,6 +62,22 @@
     "configuration": {
       "title": "deeplocal-chat-adapter",
       "properties": {
+        "deeplocal.apiMode": {
+          "type": "string", "enum": ["chat-completions", "responses"], "default": "chat-completions",
+          "description": "Local API protocol. Select responses only when the service supports the Responses API."
+        },
+        "deeplocal.remote.apiMode": {
+          "type": "string", "enum": ["chat-completions", "responses"], "default": "chat-completions",
+          "description": "Remote API protocol. Responses enables provider reasoning summaries and requires a compatible endpoint/model."
+        },
+        "deeplocal.reasoningSummary": {
+          "type": "string", "enum": ["auto", "off"], "default": "auto",
+          "description": "Request reasoning summaries in Responses mode. Turn off for models without summary support."
+        },
+        "deeplocal.displayLanguage": {
+          "type": "string", "enum": ["auto", "en", "zh-CN"], "default": "auto",
+          "description": "Sidebar language. Auto detects Chinese or English from the latest prompt and otherwise keeps the session or VS Code language. Model responses follow the prompt language."
+        },
         "deeplocal.baseUrl": {
           "type": "string",
           "default": "http://127.0.0.1:14567/v1",

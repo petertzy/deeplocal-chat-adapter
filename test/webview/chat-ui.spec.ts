@@ -142,6 +142,64 @@ test('preserves progress across multiple operations, interruption and history re
   await expect(page.locator('.reasoning[open]')).toHaveCount(0);
 });
 
+test('streams provider summaries independently from commentary and the final answer', async ({ page }, testInfo) => {
+  await dispatch(page, { type: 'language', language: 'zh-CN', preference: 'auto' });
+  await dispatch(page, { type: 'assistantStart', agent: true });
+  await dispatch(page, { type: 'reasoningStart' });
+  await dispatch(page, { type: 'summaryDelta', id: 'summary1', text: '先检查配置。' });
+  await expect(page.locator('.summary-block')).toHaveAttribute('open');
+  await expect(page.locator('.summary-block summary')).toHaveText('推理摘要');
+  await dispatch(page, { type: 'reasoningDelta', text: '我会读取配置文件。' });
+  await dispatch(page, { type: 'toolStart', activity: { id: 'read1', title: 'Read file', detail: 'src/Working.ts', state: 'running' } });
+  await expect(page.locator('.summary-block')).not.toHaveAttribute('open');
+  await expect(page.locator('.action-title')).toHaveText('读取文件');
+  await expect(page.locator('.action-path')).toHaveText('src/Working.ts');
+  await dispatch(page, { type: 'toolResult', text: 'read_file\nWorking', activity: { id: 'read1', title: 'Read file', detail: 'src/Working.ts', state: 'success' } });
+  await expect(page.locator('.action pre')).toHaveText('Working');
+  await page.locator('.summary-block summary').click();
+  await dispatch(page, { type: 'reasoningStart' });
+  await dispatch(page, { type: 'summaryDelta', id: 'summary2', text: '配置没有问题。' });
+  await dispatch(page, { type: 'reasoningDelta', text: '检查完成。' });
+  await dispatch(page, { type: 'assistantFinal', text: '检查完成。' });
+  await dispatch(page, { type: 'assistantDone', outcome: 'success' });
+  await expect(page.locator('.summary-block')).toHaveCount(2);
+  await expect(page.locator('.summary-block').first()).toHaveAttribute('open');
+  await expect(page.locator('.summary-block').last()).not.toHaveAttribute('open');
+  await expect(page.locator('.assistant .prose')).toHaveText('检查完成。');
+  await expect(page.locator('#status')).toHaveText('任务已完成');
+  await page.screenshot({ path: testInfo.outputPath('summaries-chinese.png') });
+  await dispatch(page, { type: 'restore', items: [{ role: 'Summary', id: 'old', text: '<script>unsafe()</script>' }, { role: 'DeepLocal', text: 'Done' }] });
+  await expect(page.locator('.summary-block')).not.toHaveAttribute('open');
+  await expect(page.locator('.summary-block .prose')).toHaveText('<script>unsafe()</script>');
+  await expect(page.locator('#messages script')).toHaveCount(0);
+  await expect(page.locator('.assistant .prose')).toHaveText('Done');
+});
+
+test('switches UI languages reversibly and keeps controls accessible and model text untouched', async ({ page }) => {
+  await dispatch(page, { type: 'language', language: 'zh-CN', preference: 'auto' });
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', '让助手构建、修复或探索…');
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.locator('#displayLanguage').selectOption('en');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setLanguage', language: 'en' });
+  await dispatch(page, { type: 'language', language: 'en', preference: 'en' });
+  await expect(page.locator('#settingsButton')).toHaveAttribute('aria-label', 'Settings');
+  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask the agent to build, fix, or explore…');
+  await page.locator('#apiMode').selectOption('responses');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setApiMode', apiMode: 'responses' });
+  await dispatch(page, { type: 'models', models: ['local-model'], backend: 'local', apiMode: 'responses', reasoningSummary: 'auto' });
+  await expect(page.locator('#reasoningSummary')).toBeEnabled();
+  await page.locator('#reasoningSummary').selectOption('off');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setSummary', summary: 'off' });
+  await dispatch(page, { type: 'language', language: 'zh-CN', preference: 'auto' });
+  await dispatch(page, { type: 'status', message: 'Working · step 2/8' });
+  await expect(page.locator('#status')).toHaveText('执行中 · 步骤 2/8');
+  await dispatch(page, { type: 'approval', approvalId: 'a', message: 'Create src/Ready.ts (12 lines)', hasPreview: true });
+  await expect(page.locator('#reviewTitle')).toHaveText('创建 src/Ready.ts（12 行）');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: '批准', exact: true })).toBeVisible();
+});
+
 test('restores action states and folds historical code in a light theme', async ({ page }, testInfo) => {
   await page.addStyleTag({ content: ':root { --vscode-foreground: #333; --vscode-sideBar-background: #f8f8f8; --vscode-editor-background: white; --vscode-input-background: white; --vscode-input-foreground: #333; --vscode-input-border: #ccc; --vscode-descriptionForeground: #666; --vscode-panel-border: #ddd; --vscode-dropdown-background: white; --vscode-textCodeBlock-background: #eee; --vscode-button-secondaryBackground: #ddd; --vscode-button-secondaryForeground: #333; --vscode-badge-background: #eee; --vscode-badge-foreground: #333; }' });
   await dispatch(page, { type: 'restore', items: [

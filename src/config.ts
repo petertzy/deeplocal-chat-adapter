@@ -1,5 +1,8 @@
 export interface DeepLocalConfig {
   backend: 'local' | 'remote';
+  apiMode?: 'chat-completions' | 'responses';
+  reasoningSummary?: 'off' | 'auto';
+  displayLanguage?: 'auto' | 'en' | 'zh-CN';
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -21,6 +24,9 @@ export function getConfig(remoteApiKey = ''): DeepLocalConfig {
   const backend = config.get<'local' | 'remote'>('backend', 'local');
   return {
     backend,
+    apiMode: config.get<'chat-completions' | 'responses'>(backend === 'remote' ? 'remote.apiMode' : 'apiMode', 'chat-completions'),
+    reasoningSummary: config.get<'off' | 'auto'>('reasoningSummary', 'auto'),
+    displayLanguage: config.get<'auto' | 'en' | 'zh-CN'>('displayLanguage', 'auto'),
     baseUrl: normalizeBaseUrl(config.get<string>(backend === 'remote' ? 'remote.baseUrl' : 'baseUrl', backend === 'remote' ? 'https://api.openai.com/v1' : 'http://127.0.0.1:14567/v1')),
     apiKey: backend === 'remote' ? remoteApiKey : config.get<string>('apiKey', ''),
     model: config.get<string>('remote.model', ''),

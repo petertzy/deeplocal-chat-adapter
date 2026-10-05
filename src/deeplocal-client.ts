@@ -3,6 +3,7 @@ import { Logger } from './logger';
 import { modelInformation } from './model-metadata';
 import { parseToolInput } from './tool-input';
 import { checkModelsEndpoint, ConnectionResult } from './connection-check';
+import { readResponses, responsesBody } from './responses';
 import {
   ChatCompletionChunk,
   ChatCompletionRequest,
@@ -123,9 +124,24 @@ export class DeepLocalClient {
     this.controllers.set(requestId, controller);
 
     try {
+      const config = this.configuration();
+      if (config.apiMode === 'responses') {
+        const source = `${config.backend}:${config.baseUrl}`;
+        const summary = config.reasoningSummary !== 'off';
+        const request = await this.request('/responses', {
+          method: 'POST', body: JSON.stringify(responsesBody(body, source, summary)), signal: controller.signal,
+        });
+        try {
+          if (!request.response.body) throw new Error('Responses API returned an empty response body.');
+          yield* readResponses(request.response.body, source, body.model, summary);
+        } catch (error) {
+          throw this.requestError(request, error);
+        } finally { request.cleanup(); }
+        return;
+      }
       const request = await this.request('/chat/completions', {
         method: 'POST',
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, messages: body.messages.map(({ responseContext: _context, ...message }) => message) }),
         signal: controller.signal,
       });
 
@@ -292,7 +308,7 @@ export class DeepLocalClient {
 
     try {
       this.logger.debug(`${init.method ?? 'GET'} ${url}`);
-      const requestBody = init.body && config.backend === 'remote' ? remoteCompatibleBody(init.body) : init.body;
+      const requestBody = init.body && config.backend === 'remote' && path === '/chat/completions' ? remoteCompatibleBody(init.body) : init.body;
       const requestInit: RequestInit = {
         ...init,
         ...(requestBody !== undefined ? { body: requestBody } : {}),
@@ -308,7 +324,7 @@ export class DeepLocalClient {
 
       if (!response.ok) {
         responseBody = await response.text().catch(() => '');
-        const retryBody = config.backend === 'remote'
+        const retryBody = config.backend === 'remote' && path === '/chat/completions'
           ? retryWithNoReasoningEffort(requestBody, responseBody)
           : undefined;
         if (response.status === 400 && retryBody) {
@@ -326,7 +342,9 @@ export class DeepLocalClient {
           : response.status === 404
             ? `Endpoint or model not found.${safeDetail ? ` ${safeDetail}` : ''}`
             : `HTTP ${response.status} ${response.statusText}${safeDetail ? `: ${safeDetail}` : ''}`;
-        throw new Error(`${backend} request failed: ${detail}`);
+        const hint = path === '/responses' && [400, 404, 422].includes(response.status)
+          ? ' Responses mode requires a compatible endpoint/model. Disable deeplocal.reasoningSummary for models without summaries, or select chat-completions in the backend API mode setting.' : '';
+        throw new Error(`${backend} request failed: ${detail}${hint}`);
       }
 
       return {
