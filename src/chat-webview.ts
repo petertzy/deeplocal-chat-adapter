@@ -139,7 +139,6 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   </section>
   <section id="settingsPanel" class="sheet" aria-label="Settings" hidden>
     <div class="sheet-title">Connection settings<button class="icon" data-close="settingsPanel" aria-label="Close settings">×</button></div>
-    <div class="setting"><label for="displayLanguage">Display language</label><select id="displayLanguage"><option value="auto">Follow prompt</option><option value="en">English</option><option value="zh-CN">Simplified Chinese</option></select></div>
     <div class="setting"><label>Provider</label><div class="setting-row"><span id="backendLabel">Local DeepLocal</span><button id="backendButton" class="secondary">Change</button></div><small id="endpoint"></small></div>
     <div class="setting"><label for="apiMode">API protocol</label><select id="apiMode"><option value="chat-completions">Chat Completions</option><option value="responses">Responses</option></select><small>Responses requires a compatible endpoint and model. Chat Completions keeps progress updates without separate summaries.</small></div>
     <div class="setting"><label for="reasoningSummary">Reasoning summaries</label><select id="reasoningSummary"><option value="auto">Request when supported</option><option value="off">Off</option></select></div>
@@ -211,7 +210,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   function setBusy(value) {
     busy = value;
     byId('shell').dataset.busy = String(value);
-    for (const id of ['session', 'newSession', 'deleteSession', 'historyButton', 'backendButton', 'refresh', 'model', 'agentMode', 'chatMode', 'setRemoteKeyButton', 'clearRemoteKeyButton', 'displayLanguage', 'apiMode', 'reasoningSummary']) byId(id).disabled = value || (id === 'reasoningSummary' && byId('apiMode').value !== 'responses');
+    for (const id of ['session', 'newSession', 'deleteSession', 'historyButton', 'backendButton', 'refresh', 'model', 'agentMode', 'chatMode', 'setRemoteKeyButton', 'clearRemoteKeyButton', 'apiMode', 'reasoningSummary']) byId(id).disabled = value || (id === 'reasoningSummary' && byId('apiMode').value !== 'responses');
     send.hidden = value; stop.hidden = !value; stop.disabled = false; syncSend();
   }
   function setMode(agent) {
@@ -320,7 +319,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     const msg = event.data;
     if (msg.type === 'language') {
       language = msg.language === 'zh-CN' ? 'zh-CN' : 'en';
-      byId('displayLanguage').value = msg.preference || 'auto'; localizeUi(); remember();
+      localizeUi(); remember();
     }
     if (msg.type === 'summaryDelta') addSummary(msg.id, msg.text);
     if (msg.type === 'models') {
@@ -441,7 +440,6 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   model.addEventListener('change', () => { selectedModel = model.value; model.title = model.value; remember(); syncSend(); });
   byId('agentMode').addEventListener('click', () => { setMode(true); remember(); });
   byId('chatMode').addEventListener('click', () => { setMode(false); remember(); });
-  byId('displayLanguage').addEventListener('change', () => vscode.postMessage({ type: 'setLanguage', language: byId('displayLanguage').value }));
   byId('apiMode').addEventListener('change', () => vscode.postMessage({ type: 'setApiMode', apiMode: byId('apiMode').value }));
   byId('reasoningSummary').addEventListener('change', () => vscode.postMessage({ type: 'setSummary', summary: byId('reasoningSummary').value }));
   for (const [id, panel] of [['historyButton', 'historyPanel'], ['settingsButton', 'settingsPanel']]) byId(id).addEventListener('click', () => toggleSheet(panel, byId(panel).hidden));

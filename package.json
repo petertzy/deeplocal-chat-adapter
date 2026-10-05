@@ -74,10 +74,6 @@
           "type": "string", "enum": ["auto", "off"], "default": "auto",
           "description": "Request reasoning summaries in Responses mode. Turn off for models without summary support."
         },
-        "deeplocal.displayLanguage": {
-          "type": "string", "enum": ["auto", "en", "zh-CN"], "default": "auto",
-          "description": "Sidebar language. Auto detects Chinese or English from the latest prompt and otherwise keeps the session or VS Code language. Model responses follow the prompt language."
-        },
         "deeplocal.baseUrl": {
           "type": "string",
           "default": "http://127.0.0.1:14567/v1",

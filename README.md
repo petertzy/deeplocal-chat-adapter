@@ -13,7 +13,7 @@
 - Create and edit files by path in the default Agent mode, with inline approval and diff previews.
 - Follow streamed progress updates around Agent tool calls. Updates expand while streaming, collapse before operations, and remain in task history in chronological order; the final answer appears separately. These are model-written action summaries, available when the model emits commentary, rather than hidden internal reasoning.
 - Display provider reasoning summaries separately when using a compatible Responses API model, in both Agent and Chat modes.
-- Follow Chinese/English prompts with localized sidebar controls, progress labels, operation titles and approval prompts, or choose a fixed display language.
+- Automatically follow Chinese/English conversation with localized sidebar controls, progress labels, operation titles and approval prompts; no language selector or setup is needed.
 - Let capable models inspect files, search the workspace, read diagnostics, and propose confirmed edits.
 - Restore recent chat sessions after reloading VS Code.
 
@@ -83,15 +83,18 @@ provider/model keeps ordinary messages and tool results but omits that opaque
 state. The adapter displays only provider summary text, not raw reasoning
 events. See [OpenAI's reasoning summary documentation](https://developers.openai.com/api/docs/guides/reasoning#reasoning-summaries).
 
-**Display language → Follow prompt** detects Chinese or English from the latest
-question. Short or ambiguous prompts retain the session language, initially
-using VS Code's language (Chinese or English fallback). Choose **English** or
-**Simplified Chinese** to override detection (`deeplocal.displayLanguage`).
+Language follows the conversation automatically, initially using VS Code's
+language (Chinese or English fallback). Short or ambiguous replies inherit the
+conversation language; fenced code, quoted lines, URLs and paths do not change
+it. You can also say “reply in English” or “请用中文回答” directly in the chat.
+Session switching and restoration recover the language from that conversation.
+There is no language selector. The former `deeplocal.displayLanguage` setting
+is no longer read, so an old manual choice cannot override automatic detection.
 Other interface languages are not yet translated. Model progress and answers
 are prompted to follow the user's language, including languages beyond these
 two. Provider summaries are shown as received; their language is controlled by
 the model and is not guaranteed. Code, paths, model IDs, raw tool output and
-provider diagnostics are kept verbatim. The language control changes interface
+provider diagnostics are kept verbatim. Automatic localization changes interface
 copy, not the content of previous messages.
 
 ## Chat session scope

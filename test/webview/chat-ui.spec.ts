@@ -180,9 +180,8 @@ test('switches UI languages reversibly and keeps controls accessible and model t
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await expect(page.locator('#prompt')).toHaveAttribute('placeholder', '让助手构建、修复或探索…');
   await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.locator('#displayLanguage').selectOption('en');
-  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setLanguage', language: 'en' });
-  await dispatch(page, { type: 'language', language: 'en', preference: 'en' });
+  await expect(page.locator('#displayLanguage')).toHaveCount(0);
+  await dispatch(page, { type: 'language', language: 'en' });
   await expect(page.locator('#settingsButton')).toHaveAttribute('aria-label', 'Settings');
   await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask the agent to build, fix, or explore…');
   await page.locator('#apiMode').selectOption('responses');

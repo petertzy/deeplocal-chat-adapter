@@ -9,10 +9,9 @@ import { renderChatHtml } from './chat-webview';
 import { toolActivity, ToolActivity } from './tool-activity';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey' | 'setLanguage' | 'setApiMode' | 'setSummary';
+  type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey' | 'setApiMode' | 'setSummary';
   apiMode?: 'chat-completions' | 'responses';
   summary?: 'off' | 'auto';
-  language?: 'auto' | DisplayLanguage;
   approvalId?: string;
   approved?: boolean;
   text?: string;
@@ -109,11 +108,6 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       return;
     }
     if (this.activeRequestId) return;
-    if (message.type === 'setLanguage' && ['auto', 'en', 'zh-CN'].includes(message.language ?? '')) {
-      await vscode.workspace.getConfiguration('deeplocal').update('displayLanguage', message.language, vscode.ConfigurationTarget.Global);
-      this.postLanguage();
-      return;
-    }
     if (message.type === 'setApiMode' && ['chat-completions', 'responses'].includes(message.apiMode ?? '')) {
       const key = getConfig().backend === 'remote' ? 'remote.apiMode' : 'apiMode';
       await vscode.workspace.getConfiguration('deeplocal').update(key, message.apiMode, vscode.ConfigurationTarget.Global);
@@ -219,7 +213,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
   private async sendPrompt(model: string, text: string, useAgent: boolean): Promise<void> {
     const session = this.activeSession();
-    session.language = detectLanguage(text, getConfig().displayLanguage, session.language ?? (vscode.env?.language?.startsWith('zh') ? 'zh-CN' : 'en'));
+    session.language = detectLanguage(text, this.sessionLanguage(session));
     this.postLanguage(text);
     const information = this.client.modelInformation(model);
     if (useAgent && !information.toolCalling) {
@@ -278,7 +272,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
           role: 'system',
           content: [
             'You are DeepLocal, a coding assistant inside VS Code.',
-            'Use the language of the latest user request for progress updates, explanations, and the final answer. Respect explicit requests for a different response language. Keep code, paths and command output unchanged.',
+            'Automatically use the user’s conversational language for progress updates, explanations, and the final answer. Respect explicit requests for a different response language. Short acknowledgements, quoted text, code and logs do not change the conversation language. Never ask the user to select a language in settings. Keep code, paths and command output unchanged.',
             useAgent ? 'You are in Agent mode. Execute requested work using tools, then report actual results. Do not print full file contents in chat when asked to implement something.' : 'You are in Chat mode. Explain and discuss; no file changes or commands are available.',
             'Inspect the workspace before changing files. Paths are relative to the workspace root.',
             'When asked to create a new file, use create_file with an appropriate new path. Never replace the active file merely because it is open.',
@@ -503,11 +497,19 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   private postLanguage(prompt?: string): void {
-    const preference = getConfig().displayLanguage ?? 'auto';
     const session = this.activeSession();
-    const latestPrompt = [...session.history].reverse().find(message => message.role === 'user')?.content ?? '';
-    const language = detectLanguage(prompt ?? latestPrompt, preference, session.language ?? (vscode.env?.language?.startsWith('zh') ? 'zh-CN' : 'en'));
-    this.post({ type: 'language', language, preference });
+    const language = detectLanguage(prompt ?? '', this.sessionLanguage(session));
+    this.post({ type: 'language', language });
+  }
+
+  private sessionLanguage(session: ChatSession): DisplayLanguage {
+    // Rebuild from conversation text so a previously pinned setting cannot keep
+    // overriding the user's language after upgrading. Ambiguous follow-ups inherit it.
+    let language: DisplayLanguage = vscode.env?.language?.startsWith('zh') ? 'zh-CN' : 'en';
+    for (const message of session.history) {
+      if (message.role === 'user') language = detectLanguage(message.content ?? '', language);
+    }
+    return session.history.length ? language : session.language ?? language;
   }
 
   private postSessions(): void {

@@ -1,13 +1,17 @@
 export type DisplayLanguage = 'en' | 'zh-CN';
 
 /** Conservative UI detection: ignore fenced code, URLs and paths; short replies keep the locale. */
-export function detectLanguage(text: string, preference: 'auto' | DisplayLanguage = 'auto', fallback: DisplayLanguage = 'en'): DisplayLanguage {
-  if (preference !== 'auto') return preference;
-  const prose = text.replace(/```[\s\S]*?(?:```|$)/g, '').replace(/`[^`]*`/g, '').replace(/https?:\/\/\S+|(?:[\w.-]+[\/\\]|[\/\\])\S*/g, '');
+export function detectLanguage(text: string, fallback: DisplayLanguage = 'en'): DisplayLanguage {
+  const prose = text.replace(/```[\s\S]*?(?:```|$)/g, '').replace(/`[^`]*`/g, '')
+    .replace(/^\s*>.*$/gm, '').replace(/https?:\/\/\S+|(?:[\w.-]+[\/\\]|[\/\\])\S*/g, '');
+  // An explicit conversational request takes precedence over the surrounding language.
+  const requests = [...prose.matchAll(/(?:用|使用)\s*(中文|英文|英语)(?:回答|回复|解释)?|(?:answer|reply|respond|explain)\s+in\s+(Chinese|English)/gi)];
+  const requested = requests.at(-1);
+  if (requested) return /中文|Chinese/i.test(requested[1] ?? requested[2]) ? 'zh-CN' : 'en';
   // Japanese and Korean prompts should not be classified as Chinese just because they contain Han characters.
   if (/[\u3040-\u30ff\uac00-\ud7af]/u.test(prose)) return fallback;
   if (/[\u3400-\u9fff]/u.test(prose)) return 'zh-CN';
-  if (prose.match(/\b[a-zA-Z]{2,}\b/g)?.length && /\b(the|please|could|can|create|build|fix|show|explain|what|how|implement|check|write|update|add|remove)\b/i.test(prose)) return 'en';
+  if (/\b(the|please|could|can|create|build|fix|show|explain|what|how|implement|check|write|update|add|remove|generate|review|why|where|would)\b/i.test(prose)) return 'en';
   return fallback;
 }
 
@@ -35,7 +39,6 @@ export const chineseUi: Record<string, string> = {
   'Clear key': '清除密钥', 'Update key': '更新密钥', 'API key configured': '已配置 API 密钥',
   'No API key configured': '尚未配置 API 密钥', 'Available models': '可用模型', 'Refresh models': '刷新模型',
   'Agent mode requires a model with tool calling. File changes and commands need approval. Deletions move individual files to the trash. Chat mode never edits files.': '代理模式需要支持工具调用的模型。文件更改和命令需要批准。删除会将单个文件移至回收站。聊天模式不会编辑文件。',
-  'Display language': '显示语言', 'Follow prompt': '跟随提问语言', 'English': '英语', 'Simplified Chinese': '简体中文',
   'API protocol': 'API 协议', 'Reasoning summaries': '推理摘要', 'Request when supported': '请求摘要（需要模型支持）', 'Off': '关闭',
   'Responses requires a compatible endpoint and model. Chat Completions keeps progress updates without separate summaries.': 'Responses 需要兼容的接口和模型。Chat Completions 保留进度说明，但不提供独立推理摘要。',
   'Thinking…': '正在思考…', 'Starting…': '正在开始…', 'Stopping…': '正在停止…',
