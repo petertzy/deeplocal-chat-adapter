@@ -310,6 +310,6 @@ it('reports step exhaustion instead of claiming completion', async () => {
   const approval = harness.sent.find((message) => message.type === 'approval')!;
   harness.send({ type: 'approval', approvalId: approval.approvalId, approved: false });
   await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'assistantDone')).toBe(true));
-  expect(harness.sent.some((message) => message.type === 'error' && String(message.message).includes('step limit'))).toBe(true);
+  expect(harness.sent.some((message) => message.type === 'error' && String(message.message).includes('safety limit'))).toBe(true);
   expect(env.apply).not.toHaveBeenCalled();
 });

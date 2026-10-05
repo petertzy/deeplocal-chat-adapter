@@ -162,7 +162,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   function translate(text) {
     if (language !== 'zh-CN') return text;
     if (chineseUi[text]) return chineseUi[text];
-    if (/^Working · step \d+\/\d+$/.test(text)) return text.replace('Working · step ', '执行中 · 步骤 ');
+    if (/^Working · step \d+$/.test(text)) return text.replace('Working · step ', '执行中 · 步骤 ');
     if (/^(Create|Edit) .+ \(\d+ lines\)$/.test(text)) return text.replace(/^Create /, '创建 ').replace(/^Edit /, '编辑 ').replace(/ \((\d+) lines\)$/, '（$1 行）');
     if (/^Delete .+ \(move to trash\)$/.test(text)) return text.replace(/^Delete /, '删除 ').replace(' (move to trash)', '（移至回收站）');
     if (text.startsWith('Run command: ')) return '运行命令：' + text.slice('Run command: '.length);

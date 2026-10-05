@@ -191,8 +191,8 @@ test('switches UI languages reversibly and keeps controls accessible and model t
   await page.locator('#reasoningSummary').selectOption('off');
   expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setSummary', summary: 'off' });
   await dispatch(page, { type: 'language', language: 'zh-CN', preference: 'auto' });
-  await dispatch(page, { type: 'status', message: 'Working · step 2/8' });
-  await expect(page.locator('#status')).toHaveText('执行中 · 步骤 2/8');
+  await dispatch(page, { type: 'status', message: 'Working · step 2' });
+  await expect(page.locator('#status')).toHaveText('执行中 · 步骤 2');
   await dispatch(page, { type: 'approval', approvalId: 'a', message: 'Create src/Ready.ts (12 lines)', hasPreview: true });
   await expect(page.locator('#reviewTitle')).toHaveText('创建 src/Ready.ts（12 行）');
   await page.keyboard.press('Escape');

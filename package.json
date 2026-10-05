@@ -119,10 +119,10 @@
         },
         "deeplocal.agentMaxTurns": {
           "type": "number",
-          "default": 8,
+          "default": 100,
           "minimum": 1,
-          "maximum": 20,
-          "description": "Maximum tool-use turns for one DeepLocal agent request."
+          "maximum": 1000,
+          "description": "Safety limit for tool-use turns in one DeepLocal agent request. The default is high enough that normal tasks do not stop because of this setting."
         },
         "deeplocal.logLevel": {
           "type": "string",

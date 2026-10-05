@@ -42,7 +42,10 @@ File changes appear in a review card pinned above the composer. Use
 opened in the editor; command execution also requires approval. Tool results
 are expandable and retained in the conversation. Existing unsaved edits and
 files changed during review are protected. The agent uses results to continue
-working and reports when it reaches its step limit rather than claiming success.
+working. It has a high safety guard of 100 tool-use turns by default, capped at
+1000 when configured, so ordinary tasks do not stop at a low arbitrary step
+count; if the guard is reached it reports incomplete work rather than claiming
+success.
 Create, modify, and delete are distinct actions. `delete_file` is reserved for an
 explicit deletion request, requires approval, shows a deletion diff, and moves
 one file to the trash. Directories and unsaved documents are rejected; an

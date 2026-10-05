@@ -33,7 +33,9 @@ export function getConfig(remoteApiKey = ''): DeepLocalConfig {
     maxOutputTokens: config.get<number>('maxOutputTokens', 16384),
     enableToolCalling: config.get<boolean>('enableToolCalling', true),
     injectSystemPrompt: config.get<boolean>('injectSystemPrompt', true),
-    agentMaxTurns: config.get<number>('agentMaxTurns', 8),
+    // A high guard prevents runaway tool loops while keeping normal tasks
+    // effectively unbounded from a user's perspective.
+    agentMaxTurns: Math.max(1, Math.min(1000, config.get<number>('agentMaxTurns', 100))),
     logLevel: config.get<DeepLocalConfig['logLevel']>('logLevel', 'info'),
   };
 }

@@ -378,7 +378,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       signal.throwIfAborted();
       session.transcript = session.transcript.filter((item) => item !== assistantItem);
       session.transcript.push(assistantItem);
-      this.post({ type: 'status', message: `Working · step ${turn + 1}/${getConfig().agentMaxTurns}` });
+      this.post({ type: 'status', message: `Working · step ${turn + 1}` });
       this.post({ type: 'reasoningStart' });
       let answer = '';
       let responseContext: ResponseContext | undefined;
@@ -455,7 +455,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       signal.throwIfAborted();
     }
 
-    if (!finalAnswer) throw new Error('Agent step limit reached. Work may be incomplete; review the tool results and ask to continue.');
+    if (!finalAnswer) throw new Error('Agent safety limit reached after many tool steps. Work may be incomplete; review the tool results and ask to continue.');
     return finalAnswer;
   }
 
