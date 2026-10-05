@@ -36,6 +36,8 @@ describe('per-model metadata', () => {
   it('preserves endpoint ownership and refuses incompatible protocols', () => {
     expect(modelInformation({ id: 'chat', protocol: 'openai', endpoint: '/v1/chat/completions' }, config).compatible).toBe(true);
     expect(modelInformation({ id: 'responses', endpoint: '/v1/responses' }, config).compatible).toBe(false);
+    expect(modelInformation({ id: 'responses', protocol: 'responses', endpoint: '/v1/responses' }, { ...config, apiMode: 'responses' }).compatible).toBe(true);
+    expect(modelInformation({ id: 'chat', endpoint: '/chat/completions' }, { ...config, apiMode: 'responses' }).compatible).toBe(false);
     expect(modelInformation({ id: 'other', protocol: 'anthropic' }, config).toolCalling).toBe(false);
   });
 

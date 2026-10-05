@@ -22,6 +22,7 @@ vi.mock('vscode', () => {
     replace(target: { fsPath: string }, _range: unknown, text: string) { this.operations.push({ kind: 'write', target, text }); }
   }
   return {
+    env: { language: 'en' },
     FileType: { File: 1, Directory: 2 },
     Uri: { parse: uri, joinPath: (root: { fsPath: string }, relative: string) => uri(path.resolve(root.fsPath, relative)) },
     WorkspaceEdit, Position: class {}, Range: class {},
@@ -192,6 +193,92 @@ it('defaults to tools even with an active editor; approvals execute and tool res
   await vi.waitFor(() => expect(harness.requests).toHaveLength(3));
   expect(harness.requests[2].messages.some((message) => message.role === 'tool')).toBe(true);
   await vi.waitFor(() => expect(harness.sent.filter((message) => message.type === 'assistantDone')).toHaveLength(2));
+});
+
+it('keeps tool-call progress separate from the final answer and persists it before the operation', async () => {
+  const harness = panelHarness([[{ kind: 'text', value: 'I will create the requested file.' }, tool], [{ kind: 'text', value: 'Created snake.html.' }]]);
+  harness.send({ type: 'send', text: 'Create a snake game', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'reasoningDelta')).toBe(true));
+  const progressIndex = harness.sent.findIndex((message) => message.type === 'reasoningDelta');
+  const operationIndex = harness.sent.findIndex((message) => message.type === 'toolStart');
+  expect(progressIndex).toBeLessThan(operationIndex);
+  const approval = harness.sent.find((message) => message.type === 'approval')!;
+  harness.send({ type: 'approval', approvalId: approval.approvalId, approved: true });
+  await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'assistantDone')).toBe(true));
+  const sessions = [...harness.state.values()].find(Array.isArray) as Array<{ transcript: Array<{ role: string; text: string }> }>;
+  const stored = sessions[0].transcript.find((item) => item.role === 'Reasoning');
+  expect(stored?.text).toBe('I will create the requested file.');
+  expect(sessions[0].transcript.map((item) => item.role)).toEqual(['You', 'Reasoning', 'Tool', 'DeepLocal']);
+  expect(sessions[0].transcript.at(-1)?.text).toBe('Created snake.html.');
+});
+
+it('retains partial progress when a model stream fails', async () => {
+  const harness = panelHarness([]);
+  harness.client.streamChat = async function* () {
+    yield { kind: 'text', value: 'I will inspect the workspace.' } as StreamEvent;
+    throw new Error('Stream interrupted');
+  };
+  harness.send({ type: 'send', text: 'Inspect the project', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'assistantDone')).toBe(true));
+  const sessions = [...harness.state.values()].find(Array.isArray) as Array<{ transcript: Array<{ role: string; text: string }> }>;
+  expect(sessions[0].transcript.at(-1)).toEqual({ role: 'Reasoning', text: 'I will inspect the workspace.' });
+  expect(harness.sent.some((message) => message.type === 'assistantFinal')).toBe(false);
+});
+
+it('keeps provider summaries distinct and carries opaque Responses items across tools and follow-ups', async () => {
+  const firstContext = { source: 'remote:https://example.test/v1', model: 'test', items: [
+    { type: 'reasoning', id: 'r1', summary: [], encrypted_content: 'opaque-secret' },
+    { type: 'function_call', call_id: 'c1', name: 'create_file', arguments: createArgs },
+  ] };
+  const finalContext = { ...firstContext, items: [{ type: 'message', phase: 'final_answer', content: [{ type: 'output_text', text: 'Created.' }] }] };
+  const harness = panelHarness([
+    [{ kind: 'summary', id: 'r1:0', value: 'Planning the file.' }, { kind: 'text', value: 'I will create it.' }, { kind: 'responseContext', value: firstContext }, tool],
+    [{ kind: 'summary', id: 'r2:0', value: 'Reviewing the result.' }, { kind: 'text', value: 'Created.' }, { kind: 'responseContext', value: finalContext }],
+    [{ kind: 'text', value: 'Yes.' }],
+  ]);
+  harness.send({ type: 'send', text: '创建文件', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'approval')).toBe(true));
+  expect(harness.sent.find(message => message.type === 'language')).toMatchObject({ language: 'zh-CN' });
+  const approval = harness.sent.find(message => message.type === 'approval')!;
+  harness.send({ type: 'approval', approvalId: approval.approvalId, approved: true });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
+  expect(harness.requests[1].messages.find(message => message.tool_calls)?.responseContext).toEqual(firstContext);
+  const sessions = [...harness.state.values()].find(Array.isArray) as Array<{ id: string; transcript: Array<{ role: string; text: string }> }>;
+  expect(sessions[0].transcript.map(item => item.role)).toEqual(['You', 'Summary', 'Reasoning', 'Tool', 'Summary', 'DeepLocal']);
+  harness.send({ type: 'switchSession', sessionId: sessions[0].id });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'restore')).toBe(true));
+  expect(JSON.stringify(harness.sent)).not.toContain('opaque-secret');
+  harness.send({ type: 'send', text: 'Please explain the result', model: 'test', useAgent: false });
+  await vi.waitFor(() => expect(harness.requests).toHaveLength(3));
+  expect(harness.requests[2].messages.some(message => message.responseContext?.items[0]?.phase === 'final_answer')).toBe(true);
+  expect(harness.sent.filter(message => message.type === 'language').at(-1)).toMatchObject({ language: 'en' });
+  await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(2));
+});
+
+it('persists a provider summary when the stream fails before producing an answer', async () => {
+  const harness = panelHarness([]);
+  harness.client.streamChat = async function* () {
+    yield { kind: 'summary', id: 'r1:0', value: 'Partial summary' } as StreamEvent;
+    throw new Error('Stream interrupted');
+  };
+  harness.send({ type: 'send', text: 'Explain this project', model: 'test', useAgent: false });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
+  const sessions = [...harness.state.values()].find(Array.isArray) as Array<{ transcript: Array<{ role: string; text: string }> }>;
+  expect(sessions[0].transcript.map(item => item.role)).toEqual(['You', 'Summary']);
+  expect(sessions[0].transcript.at(-1)?.text).toBe('Partial summary');
+});
+
+it('automatically follows conversation language through short replies, explicit requests and session restoration', async () => {
+  const harness = panelHarness(Array.from({ length: 4 }, () => [{ kind: 'text', value: 'Done.' } as StreamEvent]));
+  for (const [index, text] of ['请解释这个项目', 'OK', '请用英文回答', '```log\n请检查配置\n```'].entries()) {
+    harness.send({ type: 'send', text, model: 'test', useAgent: false });
+    await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(index + 1));
+    expect(harness.sent.filter(message => message.type === 'language').at(-1)?.language).toBe(index < 2 ? 'zh-CN' : 'en');
+  }
+  const sessions = [...harness.state.values()].find(Array.isArray) as Array<{ id: string }>;
+  harness.send({ type: 'switchSession', sessionId: sessions[0].id });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'restore')).toBe(true));
+  expect(harness.sent.filter(message => message.type === 'language').at(-1)?.language).toBe('en');
 });
 
 it('Stop dismisses approval, prevents writes and new turns, and permits a subsequent task', async () => {

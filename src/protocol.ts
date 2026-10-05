@@ -23,6 +23,14 @@ export interface ChatMessage {
   name?: string;
   tool_call_id?: string;
   tool_calls?: ToolCall[];
+  /** Opaque Responses output for same-provider/model continuation, never rendered. */
+  responseContext?: ResponseContext;
+}
+
+export interface ResponseContext {
+  source: string;
+  model: string;
+  items: Array<Record<string, unknown>>;
 }
 
 export interface ChatTool {
@@ -75,4 +83,6 @@ export interface ChatCompletionChunk {
 
 export type StreamEvent =
   | { kind: 'text'; value: string }
+  | { kind: 'summary'; id: string; value: string }
+  | { kind: 'responseContext'; value: ResponseContext }
   | { kind: 'toolCall'; value: ToolCall };

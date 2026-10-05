@@ -78,6 +78,27 @@ test('folds source code safely while streaming and keeps approval controls visib
   await page.screenshot({ path: testInfo.outputPath('completed-dark.png') });
 });
 
+test('shows concise progress before its operation and keeps it collapsible', async ({ page }) => {
+  await dispatch(page, { type: 'assistantStart', agent: true });
+  await dispatch(page, { type: 'reasoningStart' });
+  await dispatch(page, { type: 'reasoningDelta', text: 'I will inspect the existing configuration before changing it.' });
+  await dispatch(page, { type: 'toolStart', activity: { id: 'read1', title: 'Read file', detail: 'src/config.ts', state: 'running' } });
+  const progress = page.locator('.reasoning');
+  await expect(progress).toContainText('Progress update');
+  await expect(progress).toContainText('inspect the existing configuration');
+  await expect(progress).not.toHaveAttribute('open');
+  expect(await progress.evaluate(node => Boolean(node.compareDocumentPosition(document.querySelector('.action')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  await progress.locator('summary').click();
+  await expect(progress.locator('.prose')).toBeVisible();
+  await dispatch(page, { type: 'reasoningStart' });
+  await dispatch(page, { type: 'reasoningDelta', text: 'The configuration is ready.' });
+  await dispatch(page, { type: 'assistantFinal', text: 'The configuration is ready.' });
+  await dispatch(page, { type: 'assistantDone', outcome: 'success' });
+  await expect(page.locator('.reasoning')).toHaveCount(1);
+  await expect(page.locator('.assistant')).toHaveText('AgentThe configuration is ready.');
+  await expect(page.locator('.reasoning')).not.toContainText('The configuration is ready.');
+});
+
 test('preserves model selection, supports Chat mode and does not submit IME composition', async ({ page }) => {
   await page.locator('#model').selectOption('local-model');
   await dispatch(page, { type: 'models', models: ['gpt-6-luna', 'local-model'], backend: 'remote', hasApiKey: true });
@@ -94,6 +115,88 @@ test('preserves model selection, supports Chat mode and does not submit IME comp
   await dispatch(page, { type: 'assistantDone', outcome: 'cancelled' });
   await expect(page.locator('#status')).toContainText('Stopped');
   await expect(page.locator('#stop')).toBeHidden();
+});
+
+test('preserves progress across multiple operations, interruption and history restore', async ({ page }) => {
+  await dispatch(page, { type: 'assistantStart', agent: true });
+  // Deliver boundaries within one frame to catch pending-render ordering bugs.
+  await page.evaluate(() => {
+    for (const data of [
+      { type: 'reasoningStart' },
+      { type: 'reasoningDelta', text: 'Inspecting the file.' },
+      { type: 'toolStart', activity: { id: 'one', title: 'Read file', state: 'running' } },
+      { type: 'reasoningStart' },
+      { type: 'reasoningDelta', text: 'Checking the result. <script>unsafe()</script>' },
+      { type: 'assistantDone', outcome: 'cancelled' },
+    ]) window.dispatchEvent(new MessageEvent('message', { data }));
+  });
+  await expect(page.locator('.reasoning .prose')).toHaveText(['Inspecting the file.', 'Checking the result. <script>unsafe()</script>']);
+  await expect(page.locator('#messages script')).toHaveCount(0);
+  await expect(page.locator('#status')).toContainText('Stopped');
+  await dispatch(page, { type: 'restore', items: [
+    { role: 'Reasoning', text: 'Inspecting the file.' },
+    { role: 'Tool', text: 'read_file\nRead file.', activity: { id: 'one', title: 'Read file', state: 'success' } },
+    { role: 'Reasoning', text: 'Checking the result.' },
+  ] });
+  await expect(page.locator('#messages > details')).toHaveClass(['reasoning', 'action', 'reasoning']);
+  await expect(page.locator('.reasoning[open]')).toHaveCount(0);
+});
+
+test('streams provider summaries independently from commentary and the final answer', async ({ page }, testInfo) => {
+  await dispatch(page, { type: 'language', language: 'zh-CN', preference: 'auto' });
+  await dispatch(page, { type: 'assistantStart', agent: true });
+  await dispatch(page, { type: 'reasoningStart' });
+  await dispatch(page, { type: 'summaryDelta', id: 'summary1', text: '先检查配置。' });
+  await expect(page.locator('.summary-block')).toHaveAttribute('open');
+  await expect(page.locator('.summary-block summary')).toHaveText('推理摘要');
+  await dispatch(page, { type: 'reasoningDelta', text: '我会读取配置文件。' });
+  await dispatch(page, { type: 'toolStart', activity: { id: 'read1', title: 'Read file', detail: 'src/Working.ts', state: 'running' } });
+  await expect(page.locator('.summary-block')).not.toHaveAttribute('open');
+  await expect(page.locator('.action-title')).toHaveText('读取文件');
+  await expect(page.locator('.action-path')).toHaveText('src/Working.ts');
+  await dispatch(page, { type: 'toolResult', text: 'read_file\nWorking', activity: { id: 'read1', title: 'Read file', detail: 'src/Working.ts', state: 'success' } });
+  await expect(page.locator('.action pre')).toHaveText('Working');
+  await page.locator('.summary-block summary').click();
+  await dispatch(page, { type: 'reasoningStart' });
+  await dispatch(page, { type: 'summaryDelta', id: 'summary2', text: '配置没有问题。' });
+  await dispatch(page, { type: 'reasoningDelta', text: '检查完成。' });
+  await dispatch(page, { type: 'assistantFinal', text: '检查完成。' });
+  await dispatch(page, { type: 'assistantDone', outcome: 'success' });
+  await expect(page.locator('.summary-block')).toHaveCount(2);
+  await expect(page.locator('.summary-block').first()).toHaveAttribute('open');
+  await expect(page.locator('.summary-block').last()).not.toHaveAttribute('open');
+  await expect(page.locator('.assistant .prose')).toHaveText('检查完成。');
+  await expect(page.locator('#status')).toHaveText('任务已完成');
+  await page.screenshot({ path: testInfo.outputPath('summaries-chinese.png') });
+  await dispatch(page, { type: 'restore', items: [{ role: 'Summary', id: 'old', text: '<script>unsafe()</script>' }, { role: 'DeepLocal', text: 'Done' }] });
+  await expect(page.locator('.summary-block')).not.toHaveAttribute('open');
+  await expect(page.locator('.summary-block .prose')).toHaveText('<script>unsafe()</script>');
+  await expect(page.locator('#messages script')).toHaveCount(0);
+  await expect(page.locator('.assistant .prose')).toHaveText('Done');
+});
+
+test('switches UI languages reversibly and keeps controls accessible and model text untouched', async ({ page }) => {
+  await dispatch(page, { type: 'language', language: 'zh-CN', preference: 'auto' });
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', '让助手构建、修复或探索…');
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await expect(page.locator('#displayLanguage')).toHaveCount(0);
+  await dispatch(page, { type: 'language', language: 'en' });
+  await expect(page.locator('#settingsButton')).toHaveAttribute('aria-label', 'Settings');
+  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask the agent to build, fix, or explore…');
+  await page.locator('#apiMode').selectOption('responses');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setApiMode', apiMode: 'responses' });
+  await dispatch(page, { type: 'models', models: ['local-model'], backend: 'local', apiMode: 'responses', reasoningSummary: 'auto' });
+  await expect(page.locator('#reasoningSummary')).toBeEnabled();
+  await page.locator('#reasoningSummary').selectOption('off');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setSummary', summary: 'off' });
+  await dispatch(page, { type: 'language', language: 'zh-CN', preference: 'auto' });
+  await dispatch(page, { type: 'status', message: 'Working · step 2/8' });
+  await expect(page.locator('#status')).toHaveText('执行中 · 步骤 2/8');
+  await dispatch(page, { type: 'approval', approvalId: 'a', message: 'Create src/Ready.ts (12 lines)', hasPreview: true });
+  await expect(page.locator('#reviewTitle')).toHaveText('创建 src/Ready.ts（12 行）');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: '批准', exact: true })).toBeVisible();
 });
 
 test('restores action states and folds historical code in a light theme', async ({ page }, testInfo) => {

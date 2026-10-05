@@ -12,8 +12,10 @@ export function modelInformation(model: DeepLocalModel | undefined, config: Deep
   const hint = typeof capabilities.tool_calling === 'boolean' ? capabilities.tool_calling : model?.supports_tool_calls;
   const protocol = typeof model?.protocol === 'string' && model.protocol.trim() ? model.protocol.trim() : undefined;
   const endpoint = typeof model?.endpoint === 'string' && model.endpoint.trim() ? model.endpoint.trim() : undefined;
-  const compatible = (!protocol || ['openai', 'openai-compatible', 'chat-completions'].includes(protocol))
-    && (!endpoint || ['/chat/completions', '/v1/chat/completions'].includes(endpoint));
+  const apiMode = config.apiMode ?? 'chat-completions';
+  const endpoints = apiMode === 'responses' ? ['/responses', '/v1/responses'] : ['/chat/completions', '/v1/chat/completions'];
+  const compatible = (!protocol || ['openai', 'openai-compatible', apiMode].includes(protocol))
+    && (!endpoint || endpoints.includes(endpoint));
   const toolCalling = config.enableToolCalling && compatible && (typeof hint === 'boolean' ? hint : true);
   const reason = !compatible ? `Unsupported model protocol/endpoint: ${protocol ?? 'unspecified'} / ${endpoint ?? 'unspecified'}.`
     : !config.enableToolCalling ? 'Tool calling is disabled in settings.'

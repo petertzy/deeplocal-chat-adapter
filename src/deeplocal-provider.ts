@@ -96,7 +96,7 @@ export class DeepLocalProvider implements vscode.LanguageModelChatProvider<DeepL
 
       if (event.kind === 'text') {
         progress.report(new vscode.LanguageModelTextPart(event.value));
-      } else {
+      } else if (event.kind === 'toolCall') {
         progress.report(new vscode.LanguageModelToolCallPart(
           event.value.id,
           event.value.function.name,
