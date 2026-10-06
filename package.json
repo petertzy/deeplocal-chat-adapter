@@ -124,6 +124,18 @@
           "maximum": 1000,
           "description": "Safety limit for tool-use turns in one DeepLocal agent request. The default is high enough that normal tasks do not stop because of this setting."
         },
+        "deeplocal.approvalMode": {
+          "type": "string",
+          "enum": ["every", "safe", "full", "ask"],
+          "enumDescriptions": [
+            "Ask before every agent tool call.",
+            "Run safe operations automatically and ask before risky operations.",
+            "Allow all agent operations without prompts.",
+            "Disable agent operations; the assistant can only answer and explain."
+          ],
+          "default": "safe",
+          "description": "Controls approval and permission behavior for agent tools."
+        },
         "deeplocal.logLevel": {
           "type": "string",
           "enum": [

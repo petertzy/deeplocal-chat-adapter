@@ -11,8 +11,11 @@ export interface DeepLocalConfig {
   enableToolCalling: boolean;
   injectSystemPrompt: boolean;
   agentMaxTurns: number;
+  approvalMode?: ApprovalMode;
   logLevel: 'debug' | 'info' | 'warning' | 'error' | 'off';
 }
+
+export type ApprovalMode = 'every' | 'safe' | 'full' | 'ask';
 
 export function getConfig(remoteApiKey = ''): DeepLocalConfig {
   // Keep VS Code access behind a runtime require so pure client tests do not
@@ -36,6 +39,7 @@ export function getConfig(remoteApiKey = ''): DeepLocalConfig {
     // A high guard prevents runaway tool loops while keeping normal tasks
     // effectively unbounded from a user's perspective.
     agentMaxTurns: Math.max(1, Math.min(1000, config.get<number>('agentMaxTurns', 100))),
+    approvalMode: config.get<ApprovalMode>('approvalMode', 'safe'),
     logLevel: config.get<DeepLocalConfig['logLevel']>('logLevel', 'info'),
   };
 }

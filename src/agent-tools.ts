@@ -4,6 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { ChatMessage, ChatTool } from './protocol';
 import { parseToolInput } from './tool-input';
+import { ApprovalMode } from './config';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,6 +18,7 @@ export interface AgentToolResult {
 export interface AgentToolOptions {
   signal?: AbortSignal;
   approve?: (message: string, preview?: () => Promise<void>) => Promise<boolean>;
+  approvalMode?: ApprovalMode;
 }
 
 export function getAgentTools(): ChatTool[] {
@@ -25,7 +27,7 @@ export function getAgentTools(): ChatTool[] {
       type: 'function',
       function: {
         name: 'delete_file',
-        description: 'Move a single workspace file to the trash ONLY when the user explicitly asks to delete it. Requires approval and supports a deletion diff. Never deletes directories.',
+        description: 'Move a single workspace file to the trash ONLY when the user explicitly asks to delete it. Supports a deletion diff. Never deletes directories.',
         parameters: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } },
       },
     },
@@ -137,7 +139,7 @@ export function getAgentTools(): ChatTool[] {
       type: 'function',
       function: {
         name: 'write_file',
-        description: 'Create or replace a workspace text file. The user will be asked before changes are applied.',
+        description: 'Create or replace a workspace text file. Permission behavior follows the selected approval mode.',
         parameters: {
           type: 'object',
           required: ['path', 'content'],
@@ -152,7 +154,7 @@ export function getAgentTools(): ChatTool[] {
       type: 'function',
       function: {
         name: 'replace_in_file',
-        description: 'Replace an exact text fragment in a workspace file. The user will be asked before changes are applied.',
+        description: 'Replace an exact text fragment in a workspace file. Permission behavior follows the selected approval mode.',
         parameters: {
           type: 'object',
           required: ['path', 'oldText', 'newText'],
@@ -168,7 +170,7 @@ export function getAgentTools(): ChatTool[] {
       type: 'function',
       function: {
         name: 'run_command',
-        description: 'Run a command in the workspace. Use mainly for tests, builds, and diagnostics. The user will be asked first.',
+        description: 'Run a command in the workspace. Use mainly for tests, builds, and diagnostics. Permission behavior follows the selected approval mode.',
         parameters: {
           type: 'object',
           required: ['command', 'args'],
@@ -186,6 +188,14 @@ export async function invokeAgentTool(callId: string, name: string, rawArguments
   try {
     options.signal?.throwIfAborted();
     const args = parseToolInput(rawArguments);
+    if (options.approvalMode === 'ask') {
+      return result(callId, name, 'Ask-only mode does not permit agent operations. Explain the proposed action instead.', 'declined');
+    }
+    if (options.approvalMode === 'every' && !isActionTool(name)) {
+      const approved = await approveIfNeeded(name, args, `Allow tool: ${name}`, options);
+      options.signal?.throwIfAborted();
+      if (!approved) return result(callId, name, 'User declined tool execution. Do not retry without new instructions.', 'declined');
+    }
     switch (name) {
       case 'get_workspace_summary':
         return result(callId, name, await getWorkspaceSummary());
@@ -219,6 +229,34 @@ export async function invokeAgentTool(callId: string, name: string, rawArguments
   } catch (error) {
     return result(callId, name, `Tool error: ${messageOf(error)}`, 'error');
   }
+}
+
+function isActionTool(name: string): boolean {
+  return ['write_file', 'create_file', 'replace_in_file', 'delete_file', 'run_command'].includes(name);
+}
+
+function needsApproval(name: string, args: Record<string, unknown>, mode: ApprovalMode | undefined): boolean {
+  if (mode === 'full') return false;
+  if (mode === 'every' || mode === undefined) return true;
+  if (name === 'delete_file') return true;
+  if (name === 'run_command') return unsafeCommand(String(args.command ?? ''), Array.isArray(args.args) ? args.args.map(String) : []);
+  if (['write_file', 'create_file', 'replace_in_file'].includes(name)) return sensitivePath(String(args.path ?? ''));
+  return false;
+}
+
+function sensitivePath(value: string): boolean {
+  const path = value.toLowerCase();
+  return /(^|\/)(\.env(?:\..*)?|.*credential.*|.*secret.*|.*token.*|.*key.*|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|\.git\/.*|settings\.json)$/.test(path);
+}
+
+function unsafeCommand(command: string, args: string[]): boolean {
+  const value = `${command} ${args.join(' ')}`.toLowerCase();
+  return /\b(rm|rmdir|del|format|shutdown|reboot|sudo|chmod|chown|curl|wget|ssh|scp|git)\b|\b(install|publish|push|commit|reset|clean|checkout|delete|remove|drop|truncate)\b/.test(value);
+}
+
+async function approveIfNeeded(name: string, args: Record<string, unknown>, message: string, options: AgentToolOptions, preview?: () => Promise<void>): Promise<boolean> {
+  if (!needsApproval(name, args, options.approvalMode)) return true;
+  return options.approve ? options.approve(message, preview) : confirm(message);
 }
 
 async function getWorkspaceSummary(): Promise<string> {
@@ -436,7 +474,7 @@ async function deleteFile(args: Record<string, unknown>, options: AgentToolOptio
   try {
     const message = `Delete ${label} (move to trash)`;
     const preview = async () => { await vscode.commands.executeCommand('vscode.diff', before, after, `Delete ${label}`, { preview: true }); };
-    const approved = options.approve ? await options.approve(message, preview) : await confirm(message);
+    const approved = await approveIfNeeded('delete_file', args, message, options, preview);
     options.signal?.throwIfAborted();
     if (!approved) return 'User declined file deletion. Do not retry without new instructions.';
     if (document.version !== version || document.isDirty) throw new Error('File changed during review; request deletion again after reviewing it.');
@@ -461,7 +499,7 @@ async function applyFileChange(uri: vscode.Uri, document: vscode.TextDocument | 
   try {
     const preview = async () => { await vscode.commands.executeCommand('vscode.diff', before, after, `${document ? 'Edit' : 'Create'} ${label}`, { preview: true }); };
     const message = `${document ? 'Edit' : 'Create'} ${label} (${content.split('\n').length} lines)`;
-    const approved = options.approve ? await options.approve(message, preview) : await confirm(message);
+    const approved = await approveIfNeeded(document ? 'write_file' : 'create_file', { path: label }, message, options, preview);
     options.signal?.throwIfAborted();
     if (!approved) return 'User declined file change. Do not retry this action without new instructions.';
     if (document && (document.version !== version || document.isDirty)) throw new Error('File changed during review; read it again before editing.');
@@ -490,7 +528,7 @@ async function runCommand(args: Record<string, unknown>, options: AgentToolOptio
   }
 
   const message = `Run command: ${command} ${commandArgs.join(' ')}?`;
-  const ok = await (options.approve ? options.approve(message) : confirm(message));
+  const ok = await approveIfNeeded('run_command', args, message, options);
   options.signal?.throwIfAborted();
   if (!ok) {
     return 'User declined command execution.';

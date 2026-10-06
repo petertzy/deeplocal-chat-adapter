@@ -8,9 +8,10 @@ import { renderChatHtml } from './chat-webview';
 import { toolActivity, ToolActivity } from './tool-activity';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey' | 'setApiMode' | 'setSummary';
+  type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey' | 'setApiMode' | 'setSummary' | 'setApprovalMode';
   apiMode?: 'chat-completions' | 'responses';
   summary?: 'off' | 'auto';
+  approvalMode?: 'every' | 'safe' | 'full' | 'ask';
   approvalId?: string;
   approved?: boolean;
   text?: string;
@@ -117,6 +118,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       await this.sendModels();
       return;
     }
+    if (message.type === 'setApprovalMode' && ['every', 'safe', 'full', 'ask'].includes(message.approvalMode ?? '')) {
+      await vscode.workspace.getConfiguration('deeplocal').update('approvalMode', message.approvalMode, vscode.ConfigurationTarget.Global);
+      this.post({ type: 'permissionMode', approvalMode: message.approvalMode });
+      return;
+    }
     if (message.type === 'setBackend') {
       const selected = await vscode.window.showQuickPick([
         { label: 'Local DeepLocal', description: 'http://127.0.0.1:14567/v1', value: 'local' },
@@ -202,6 +208,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         baseUrl: getConfig().baseUrl,
         apiMode: getConfig().apiMode ?? 'chat-completions',
         reasoningSummary: getConfig().reasoningSummary ?? 'auto',
+        approvalMode: getConfig().approvalMode,
       });
     } catch (error) {
       this.postError(`Failed to load ${getConfig().backend === 'remote' ? 'remote' : 'DeepLocal'} models: ${messageOf(error)}`);
@@ -209,14 +216,17 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   private async sendPrompt(model: string, text: string, useAgent: boolean): Promise<void> {
+    const permissionMode = getConfig().approvalMode ?? 'safe';
+    const operationsAllowed = permissionMode !== 'ask';
+    const effectiveAgent = useAgent && operationsAllowed;
     const session = this.activeSession();
     const information = this.client.modelInformation(model);
-    if (useAgent && !information.toolCalling) {
+    if (effectiveAgent && !information.toolCalling) {
       this.postError(`${information.reason} Select a tool-capable model for Agent mode, or choose Chat mode.`);
       this.post({ type: 'assistantDone' });
       return;
     }
-    if (useAgent && !vscode.workspace.workspaceFolders?.length) {
+    if (effectiveAgent && !vscode.workspace.workspaceFolders?.length) {
       this.postError('Open a project folder in VS Code before starting an agent task.');
       this.post({ type: 'assistantDone' });
       return;
@@ -259,16 +269,16 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       session.transcript.push(assistantItem);
       await this.persist();
 
-      this.post({ type: 'assistantStart', agent: useAgent });
+      this.post({ type: 'assistantStart', agent: effectiveAgent });
 
       const messages = [...session.history];
-      if ((useAgent || getConfig().injectSystemPrompt) && messages[0]?.role !== 'system') {
+      if ((effectiveAgent || getConfig().injectSystemPrompt) && messages[0]?.role !== 'system') {
         messages.unshift({
           role: 'system',
           content: [
             'You are DeepLocal, a coding assistant inside VS Code.',
             'Automatically use the user’s conversational language for progress updates, explanations, and the final answer. Respect explicit requests for a different response language. Short acknowledgements, quoted text, code and logs do not change the conversation language. Never ask the user to select a language in settings. Keep code, paths and command output unchanged.',
-            useAgent ? 'You are in Agent mode. Execute requested work using tools, then report actual results. Do not print full file contents in chat when asked to implement something.' : 'You are in Chat mode. Explain and discuss; no file changes or commands are available.',
+            effectiveAgent ? 'You are in Agent mode. Execute requested work using tools, then report actual results. Do not print full file contents in chat when asked to implement something.' : permissionMode === 'ask' ? 'You are in Ask-only mode. Analyze, explain, and suggest changes, but do not claim to have performed operations.' : 'You are in Chat mode. Explain and discuss; no file changes or commands are available.',
             'Inspect the workspace before changing files. Paths are relative to the workspace root.',
             'When asked to create a new file, use create_file with an appropriate new path. Never replace the active file merely because it is open.',
             'Read existing files before editing. Use replace_in_file for targeted changes; write_file for intentional full replacements.',
@@ -290,7 +300,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         this.schedulePersist();
       };
       controller.signal.throwIfAborted();
-      answer = useAgent
+      answer = effectiveAgent
         ? await this.runAgentRequest(requestId, model, messages, onDelta, controller.signal, session, assistantItem, onSummary, onContext)
         : await this.runChatRequest(requestId, model, messages, onDelta, onSummary, onContext);
       controller.signal.throwIfAborted();
@@ -432,6 +442,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         this.post({ type: 'toolStart', activity });
         const result = await invokeAgentTool(call.id, call.function.name, call.function.arguments, {
           signal,
+          approvalMode: getConfig().approvalMode ?? 'safe',
           approve: (message, preview) => this.requestApproval(message, signal, preview),
         });
         results.push(result);

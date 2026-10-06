@@ -9,7 +9,7 @@ import { toolActivity } from '../../src/tool-activity';
 const env = vi.hoisted(() => ({
   files: new Map<string, string>(), dirty: false, version: 1,
   apply: vi.fn(), show: vi.fn(), dispose: vi.fn(), command: vi.fn(), trash: vi.fn(),
-  config: { injectSystemPrompt: true, agentMaxTurns: 3, maxOutputTokens: 1000, backend: 'local' },
+  config: { injectSystemPrompt: true, agentMaxTurns: 3, maxOutputTokens: 1000, backend: 'local', approvalMode: 'every' },
 }));
 
 vi.mock('../../src/config', () => ({ getConfig: () => env.config }));
@@ -107,6 +107,30 @@ it('rejecting or stopping during approval never writes files', async () => {
   expect(env.dispose).toHaveBeenCalledTimes(2);
 });
 
+it('applies safe-mode normal file changes automatically but protects sensitive paths', async () => {
+  const approve = vi.fn(async () => true);
+  const normal = await invokeAgentTool('c1', 'create_file', createArgs, { approvalMode: 'safe', approve });
+  expect(normal.status).toBe('success');
+  expect(approve).not.toHaveBeenCalled();
+  const sensitive = await invokeAgentTool('c2', 'create_file', JSON.stringify({ path: '.env.local', content: 'KEY=value' }), { approvalMode: 'safe', approve });
+  expect(sensitive.status).toBe('success');
+  expect(approve).toHaveBeenCalledOnce();
+});
+
+it('ask-only mode declines all operations without applying an edit', async () => {
+  const result = await invokeAgentTool('c1', 'create_file', createArgs, { approvalMode: 'ask' });
+  expect(result.status).toBe('declined');
+  expect(result.content).toContain('Ask-only');
+  expect(env.apply).not.toHaveBeenCalled();
+});
+
+it('approve-every-operation mode also asks before read-only tools', async () => {
+  const approve = vi.fn(async () => false);
+  const result = await invokeAgentTool('c1', 'get_active_file', '{}', { approvalMode: 'every', approve });
+  expect(result.status).toBe('declined');
+  expect(approve).toHaveBeenCalledWith('Allow tool: get_active_file', undefined);
+});
+
 it('rejects files changed during review and a newly created path collision', async () => {
   const result = await invokeAgentTool('c1', 'write_file', JSON.stringify({ path: 'existing.ts', content: 'new' }), {
     approve: async () => { env.version++; return true; },
@@ -179,6 +203,7 @@ it('defaults to tools even with an active editor; approvals execute and tool res
   expect(script).toBeTruthy();
   expect(() => new Script(script!)).not.toThrow();
   expect(harness.webview.html).not.toContain('editActiveFile');
+  expect(harness.webview.html).toContain('permissionMode');
   harness.send({ type: 'send', text: 'Create a snake game', model: 'test' });
   await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'approval')).toBe(true));
   const approval = harness.sent.find((message) => message.type === 'approval')!;
