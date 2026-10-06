@@ -215,10 +215,14 @@ test('does not force-scroll away from a reader inspecting earlier messages', asy
   expect(await page.locator('#messages').evaluate(node => node.scrollTop)).toBe(0);
 });
 
-test('rejects deletion explicitly and preserves partial text and draft after a failure', async ({ page }) => {
+test('clears submitted text, keeps a follow-up draft, and rejects deletion explicitly', async ({ page }) => {
   await page.locator('#prompt').fill('Delete obsolete.html');
   await page.locator('#send').click();
+  await expect(page.locator('#prompt')).toHaveValue('');
+  await expect(page.locator('.message.user')).toContainText('Delete obsolete.html');
   await dispatch(page, { type: 'assistantStart' });
+  await expect(page.locator('#modeHint')).toContainText('Draft a follow-up');
+  await page.locator('#prompt').fill('Use the safer alternative instead.');
   await dispatch(page, { type: 'toolStart', activity: { id: 'delete1', title: 'Delete file', detail: 'obsolete.html', state: 'running' } });
   await dispatch(page, { type: 'approval', approvalId: 'delete-approval', message: 'Delete obsolete.html (move to trash)', hasPreview: true });
   await page.locator('#reject').click();
@@ -233,7 +237,7 @@ test('rejects deletion explicitly and preserves partial text and draft after a f
   });
   await expect(page.locator('.action-state')).toHaveText('Declined');
   await expect(page.locator('.assistant')).toContainText('The file was kept.');
-  await expect(page.locator('#prompt')).toHaveValue('Delete obsolete.html');
+  await expect(page.locator('#prompt')).toHaveValue('Use the safer alternative instead.');
   await expect(page.locator('#status')).toHaveText('Needs attention');
   await expect(page.locator('#send')).toBeEnabled();
 });

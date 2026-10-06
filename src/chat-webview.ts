@@ -73,7 +73,6 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   textarea::placeholder { color: var(--vscode-input-placeholderForeground, #888); }
   .composer-toolbar { display: flex; align-items: center; gap: 7px; margin-top: 8px; min-width: 0; }
   .modes { display: flex; border: 1px solid var(--vscode-panel-border, #ffffff20); border-radius: 5px; padding: 2px; gap: 1px; }
-  #permissionMode { max-width: 112px; font-size: 11px; }
   .modes button { font-size: 11px; padding: 2px 6px; }
   .modes button[aria-pressed="true"] { background: var(--vscode-button-secondaryBackground, #3a3a3a); color: var(--vscode-button-secondaryForeground, #eee); }
   select { min-width: 0; border: 1px solid var(--vscode-input-border, #ffffff20); background: var(--vscode-dropdown-background, #242424); border-radius: 4px; padding: 5px; }
@@ -125,7 +124,6 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       <textarea id="prompt" aria-label="Task" placeholder="Ask the agent to build, fix, or explore…" rows="3"></textarea>
       <div class="composer-toolbar">
         <div class="modes" role="group" aria-label="Mode"><button id="agentMode" aria-pressed="true" title="Agent can inspect files and propose changes">Agent</button><button id="chatMode" aria-pressed="false" title="Discuss without file changes">Chat</button></div>
-        <select id="permissionMode" aria-label="Agent permissions" title="Agent permissions"><option value="every">Approve every action</option><option value="safe">Safe auto</option><option value="full">Full access</option><option value="ask">Ask only</option></select>
         <select id="model" aria-label="Model"><option value="">Loading models…</option></select>
         <button id="send" class="primary icon" aria-label="Send task" title="Send task" disabled><svg viewBox="0 0 16 16"><path d="M8 13V3M3 8l5-5 5 5"/></svg></button>
         <button id="stop" class="secondary" hidden>Stop</button>
@@ -143,6 +141,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     <div class="setting"><label>Provider</label><div class="setting-row"><span id="backendLabel">Local DeepLocal</span><button id="backendButton" class="secondary">Change</button></div><small id="endpoint"></small></div>
     <div class="setting"><label for="apiMode">API protocol</label><select id="apiMode"><option value="chat-completions">Chat Completions</option><option value="responses">Responses</option></select><small>Responses requires a compatible endpoint and model. Chat Completions keeps progress updates without separate summaries.</small></div>
     <div class="setting"><label for="reasoningSummary">Reasoning summaries</label><select id="reasoningSummary"><option value="auto">Request when supported</option><option value="off">Off</option></select></div>
+    <div class="setting"><label for="permissionMode">Agent permissions</label><select id="permissionMode"><option value="every">Approve every action</option><option value="safe">Safe auto</option><option value="full">Full access</option><option value="ask">Ask only</option></select><small>Controls when the agent can run workspace operations. Approval requests always appear in the conversation.</small></div>
     <div class="setting" id="remoteKeyRow" hidden><label>API key · Secure storage</label><small id="remoteKeyStatus"></small><div class="setting-row"><button id="setRemoteKeyButton" class="secondary">Set API key</button><button id="clearRemoteKeyButton" class="secondary">Clear key</button></div></div>
     <div class="setting"><label>Available models</label><button id="refresh" class="secondary">Refresh models</button></div>
     <small>Agent mode requires a model with tool calling. File changes and commands need approval. Deletions move individual files to the trash. Chat mode never edits files.</small>
@@ -158,7 +157,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   const actions = new Map();
   const summaries = new Map();
   let busy = false, useAgent = saved.useAgent !== false, activeSessionId;
-  let currentAssistant, currentReasoning, assistantText = '', reasoningText = '', pendingPrompt, approvalId, failed = false;
+  let currentAssistant, currentReasoning, assistantText = '', reasoningText = '', approvalId, failed = false;
   let selectedModel = saved.model || '', selectedBackend = saved.backend, approvalMode = saved.approvalMode || 'safe';
   let scheduledRender;
   const welcome = byId('welcome');
@@ -172,14 +171,20 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     byId('shell').dataset.busy = String(value);
     for (const id of ['session', 'newSession', 'deleteSession', 'historyButton', 'backendButton', 'refresh', 'model', 'agentMode', 'chatMode', 'permissionMode', 'setRemoteKeyButton', 'clearRemoteKeyButton', 'apiMode', 'reasoningSummary']) byId(id).disabled = value || (id === 'reasoningSummary' && byId('apiMode').value !== 'responses');
     send.hidden = value; stop.hidden = !value; stop.disabled = false; syncSend();
+    setMode(useAgent);
   }
   function setMode(agent) {
     useAgent = agent;
     byId('agentMode').setAttribute('aria-pressed', String(agent));
     byId('chatMode').setAttribute('aria-pressed', String(!agent));
     const permissionHints = { every: 'Approve every action', safe: 'Safe operations run automatically', full: 'Full access · operations run automatically', ask: 'Ask only · no operations' };
-    byId('modeHint').textContent = agent ? 'Agent · ' + permissionHints[approvalMode] + ' · Shift+Enter for newline' : 'Chat · No file changes · Shift+Enter for newline';
-    prompt.placeholder = agent ? 'Ask the agent to build, fix, or explore…' : 'Ask a question about your project…';
+    if (busy) {
+      byId('modeHint').textContent = 'Working · Draft a follow-up below · Shift+Enter for newline';
+      prompt.placeholder = 'Draft a follow-up while the task runs…';
+    } else {
+      byId('modeHint').textContent = agent ? 'Agent · ' + permissionHints[approvalMode] + ' · Shift+Enter for newline' : 'Chat · No file changes · Shift+Enter for newline';
+      prompt.placeholder = agent ? 'Ask the agent to build, fix, or explore…' : 'Ask a question about your project…';
+    }
   }
   function toggleSheet(id, open) {
     for (const [panel, trigger] of [['historyPanel', 'historyButton'], ['settingsPanel', 'settingsButton']]) {
@@ -376,18 +381,19 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       if (reasoningText) addReasoning(reasoningText);
       if (currentAssistant && assistantText) renderBody(currentAssistant, assistantText);
       if (currentAssistant && !assistantText.trim()) currentAssistant.parentElement.remove();
-      if (pendingPrompt !== undefined && prompt.value.trim() === pendingPrompt && !failed) { prompt.value = ''; drafts.delete(activeSessionId); }
-      pendingPrompt = undefined; setBusy(false); currentAssistant = undefined; currentReasoning = undefined;
+      setBusy(false); currentAssistant = undefined; currentReasoning = undefined;
       status.textContent = msg.outcome === 'cancelled' ? 'Stopped · Applied changes kept' : failed || msg.outcome === 'error' ? 'Needs attention' : msg.outcome === 'success' ? 'Task completed' : 'Ready';
       remember(); resizePrompt();
     }
-    if (msg.type === 'error') { failed = true; pendingPrompt = undefined; addMessage('Needs attention', msg.message, 'error'); status.textContent = 'Needs attention'; }
+    if (msg.type === 'error') { failed = true; addMessage('Needs attention', msg.message, 'error'); status.textContent = 'Needs attention'; }
     if (msg.type === 'notice') addMessage('Note', msg.message);
   });
   send.addEventListener('click', () => {
     const text = prompt.value.trim(); if (busy || !text || !model.value) return;
     failed = false; setBusy(true); status.textContent = 'Starting…'; toggleSheet('', false);
-    addMessage('You', text); drafts.set(activeSessionId, prompt.value); pendingPrompt = text; remember();
+    addMessage('You', text);
+    // The conversation owns submitted text. Keep the composer available for a follow-up.
+    prompt.value = ''; drafts.delete(activeSessionId); resizePrompt(); remember(); prompt.focus();
     vscode.postMessage({ type: 'send', text, model: model.value, useAgent });
   });
   stop.addEventListener('click', () => { stop.disabled = true; status.textContent = 'Stopping…'; vscode.postMessage({ type: 'stop' }); });
