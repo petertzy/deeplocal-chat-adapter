@@ -97,7 +97,7 @@ events. See [OpenAI's reasoning summary documentation](https://developers.openai
 Language follows the conversation automatically, initially using VS Code's
 language (Chinese or English fallback). Short or ambiguous replies inherit the
 conversation language; fenced code, quoted lines, URLs and paths do not change
-it. You can also say “reply in English” or “请用中文回答” directly in the chat.
+it. You can also say “reply in English” directly in the chat.
 Session switching and restoration recover the language from that conversation.
 There is no language selector. The former `deeplocal.displayLanguage` setting
 is no longer read, so an old manual choice cannot override automatic detection.

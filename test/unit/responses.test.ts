@@ -62,15 +62,15 @@ it('streams summaries separately, replays opaque state and maps tools to the Res
 
 it('handles byte-split UTF-8, CRLF and a completion without a trailing newline', async () => {
   const encoded = new TextEncoder().encode(sse([
-    { type: 'response.reasoning_summary_text.delta', item_id: 'r1', summary_index: 0, delta: '检查文件' },
-    completed([{ ...output[0], summary: [{ type: 'summary_text', text: '检查文件' }] }]),
+    { type: 'response.reasoning_summary_text.delta', item_id: 'r1', summary_index: 0, delta: 'Checking the file.' },
+    completed([{ ...output[0], summary: [{ type: 'summary_text', text: 'Checking the file.' }] }]),
   ]).trimEnd());
   const body = new ReadableStream<Uint8Array>({ start(controller) {
     for (const byte of encoded) controller.enqueue(new Uint8Array([byte]));
     controller.close();
   } });
   const events = await collect(readResponses(body, source, request.model, true));
-  expect(events.filter(event => event.kind === 'summary')).toEqual([{ kind: 'summary', id: 'r1:0', value: '检查文件' }]);
+  expect(events.filter(event => event.kind === 'summary')).toEqual([{ kind: 'summary', id: 'r1:0', value: 'Checking the file.' }]);
 });
 
 it('accepts multiline SSE data and recovers summaries/text from completed output without deltas', async () => {

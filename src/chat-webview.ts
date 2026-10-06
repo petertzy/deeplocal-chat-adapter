@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { chineseUi } from './chat-language';
 
 /** Self-contained webview: no remote assets, HTML from models, or inline handlers. */
 export function renderChatHtml(webview: { cspSource: string }): string {
@@ -156,53 +155,12 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   const drafts = new Map(Object.entries(saved.drafts || {}));
   const actions = new Map();
   const summaries = new Map();
-  const chineseUi = ${JSON.stringify(chineseUi).replace(/</g, '\\u003c')};
-  let language = saved.language || 'en';
-  const originalCopy = new WeakMap();
-  function translate(text) {
-    if (language !== 'zh-CN') return text;
-    if (chineseUi[text]) return chineseUi[text];
-    if (/^Working · step \d+$/.test(text)) return text.replace('Working · step ', '执行中 · 步骤 ');
-    if (/^(Create|Edit) .+ \(\d+ lines\)$/.test(text)) return text.replace(/^Create /, '创建 ').replace(/^Edit /, '编辑 ').replace(/ \((\d+) lines\)$/, '（$1 行）');
-    if (/^Delete .+ \(move to trash\)$/.test(text)) return text.replace(/^Delete /, '删除 ').replace(' (move to trash)', '（移至回收站）');
-    if (text.startsWith('Run command: ')) return '运行命令：' + text.slice('Run command: '.length);
-    if (/^(Code|Long response)( · .*?)? · \d+ lines · expand$/.test(text)) return text.replace(/^Code/, '代码').replace(/^Long response/, '长回复').replace(' lines · expand', ' 行 · 展开');
-    const operation = Object.keys(chineseUi).find(key => text.startsWith(key + ' · '));
-    if (operation) return chineseUi[operation] + text.slice(operation.length);
-    return text;
-  }
-  function localizeUi() {
-    document.documentElement.lang = language;
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      // Never translate generated prose, source, paths, user titles or model IDs.
-      if (node.parentElement.closest('script, .prose, pre, .action-path, #taskTitle, #model, #session')) continue;
-      const previous = originalCopy.get(node);
-      const source = previous && node.textContent === previous.translated ? previous.source : node.textContent;
-      const translated = source.replace(/\S[\s\S]*\S|\S/, value => translate(value));
-      originalCopy.set(node, { source, translated });
-      if (node.textContent !== translated) node.textContent = translated;
-    }
-    for (const node of document.querySelectorAll('[aria-label], [placeholder], button[title]')) {
-      for (const attr of ['aria-label', 'placeholder', 'title']) {
-        if (!node.hasAttribute(attr)) continue;
-        const key = 'original-' + attr;
-        const previous = node.getAttribute('data-' + key);
-        const value = node.getAttribute(attr);
-        const source = previous && value === translate(previous) ? previous : (previous && Object.values(chineseUi).includes(value) ? previous : value);
-        node.setAttribute('data-' + key, source);
-        if (value !== translate(source)) node.setAttribute(attr, translate(source));
-      }
-    }
-  }
-  new MutationObserver(localizeUi).observe(document.body, { subtree: true, childList: true, characterData: true });
   let busy = false, useAgent = saved.useAgent !== false, activeSessionId;
   let currentAssistant, currentReasoning, assistantText = '', reasoningText = '', pendingPrompt, approvalId, failed = false;
   let selectedModel = saved.model || '', selectedBackend = saved.backend;
   let scheduledRender;
   const welcome = byId('welcome');
-  function remember() { vscode.setState({ drafts: Object.fromEntries(drafts), model: model.value, backend: selectedBackend, useAgent, language }); }
+  function remember() { vscode.setState({ drafts: Object.fromEntries(drafts), model: model.value, backend: selectedBackend, useAgent }); }
   function nearBottom() { return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 90; }
   function follow(wasNear) { if (wasNear) messages.scrollTop = messages.scrollHeight; }
   function syncSend() { send.disabled = busy || !model.value || !prompt.value.trim(); }
@@ -257,7 +215,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     const followTail = nearBottom(); welcome.hidden = true;
     const item = document.createElement('section'); item.className = 'message ' + (className || (role === 'You' ? 'user' : 'assistant'));
     const label = document.createElement('div'); label.className = 'role'; label.textContent = role;
-    const body = document.createElement('div'); renderBody(body, role === 'Note' || className === 'error' ? translate(text) : text);
+    const body = document.createElement('div'); renderBody(body, text);
     item.append(label, body); messages.append(item); follow(followTail); return body;
   }
   function addTool(text, activity) {
@@ -317,10 +275,6 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   }
   window.addEventListener('message', event => {
     const msg = event.data;
-    if (msg.type === 'language') {
-      language = msg.language === 'zh-CN' ? 'zh-CN' : 'en';
-      localizeUi(); remember();
-    }
     if (msg.type === 'summaryDelta') addSummary(msg.id, msg.text);
     if (msg.type === 'models') {
       byId('apiMode').value = msg.apiMode || 'chat-completions';
@@ -451,7 +405,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     vscode.postMessage({ type, approvalId, approved });
     if (type === 'approval') for (const action of ['preview', 'approve', 'reject']) byId(action).disabled = true;
   });
-  setMode(useAgent); localizeUi(); vscode.postMessage({ type: 'ready' });
+  setMode(useAgent); vscode.postMessage({ type: 'ready' });
 </script>
 </body>
 </html>`;

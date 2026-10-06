@@ -4,7 +4,6 @@ import { getConfig } from './config';
 import { DeepLocalClient } from './deeplocal-client';
 import { Logger } from './logger';
 import { ChatMessage, ToolCall, ResponseContext, StreamEvent } from './protocol';
-import { detectLanguage, DisplayLanguage } from './chat-language';
 import { renderChatHtml } from './chat-webview';
 import { toolActivity, ToolActivity } from './tool-activity';
 
@@ -33,7 +32,6 @@ interface ChatSession {
   updatedAt: number;
   history: ChatMessage[];
   transcript: PersistedChatItem[];
-  language?: DisplayLanguage;
 }
 
 export class ChatPanel implements vscode.WebviewViewProvider {
@@ -155,7 +153,6 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       return;
     }
     if (message.type === 'ready' || message.type === 'refreshModels') {
-      this.postLanguage();
       await this.sendModels();
       this.postSessions();
       this.restoreTranscript();
@@ -213,8 +210,6 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
   private async sendPrompt(model: string, text: string, useAgent: boolean): Promise<void> {
     const session = this.activeSession();
-    session.language = detectLanguage(text, this.sessionLanguage(session));
-    this.postLanguage(text);
     const information = this.client.modelInformation(model);
     if (useAgent && !information.toolCalling) {
       this.postError(`${information.reason} Select a tool-capable model for Agent mode, or choose Chat mode.`);
@@ -491,26 +486,10 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   }
 
   private restoreTranscript(): void {
-    this.postLanguage();
     const session = repairTranscript(this.activeSession());
     this.post({ type: 'restore', items: session.transcript });
   }
 
-  private postLanguage(prompt?: string): void {
-    const session = this.activeSession();
-    const language = detectLanguage(prompt ?? '', this.sessionLanguage(session));
-    this.post({ type: 'language', language });
-  }
-
-  private sessionLanguage(session: ChatSession): DisplayLanguage {
-    // Rebuild from conversation text so a previously pinned setting cannot keep
-    // overriding the user's language after upgrading. Ambiguous follow-ups inherit it.
-    let language: DisplayLanguage = vscode.env?.language?.startsWith('zh') ? 'zh-CN' : 'en';
-    for (const message of session.history) {
-      if (message.role === 'user') language = detectLanguage(message.content ?? '', language);
-    }
-    return session.history.length ? language : session.language ?? language;
-  }
 
   private postSessions(): void {
     this.post({

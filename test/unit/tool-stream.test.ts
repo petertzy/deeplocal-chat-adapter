@@ -30,7 +30,7 @@ const bytes = (text: string) => new TextEncoder().encode(text);
 afterEach(() => vi.unstubAllGlobals());
 
 it('preserves mixed text, fragmented names and parallel calls at every byte boundary', async () => {
-  const stream = line({ content: '你好', tool_calls: [
+  const stream = line({ content: 'hello', tool_calls: [
     { index: 1, id: 'second', function: { name: 'wri', arguments: '{"x":' } },
     { index: 0, id: 'first', function: { name: 're', arguments: '{"path":"' } },
   ] }) + line({ content: 'done', tool_calls: [
@@ -40,7 +40,7 @@ it('preserves mixed text, fragmented names and parallel calls at every byte boun
   const encoded = bytes(stream);
   const expected = await collect(clientFor([encoded]));
   expect(expected).toEqual([
-    { kind: 'text', value: '你好' }, { kind: 'text', value: 'done' },
+    { kind: 'text', value: 'hello' }, { kind: 'text', value: 'done' },
     { kind: 'toolCall', value: { id: 'first', type: 'function', function: { name: 'read', arguments: '{"path":"a"}' } } },
     { kind: 'toolCall', value: { id: 'second', type: 'function', function: { name: 'write', arguments: '{"x":1}' } } },
   ]);

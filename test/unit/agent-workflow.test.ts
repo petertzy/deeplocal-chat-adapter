@@ -236,9 +236,8 @@ it('keeps provider summaries distinct and carries opaque Responses items across 
     [{ kind: 'summary', id: 'r2:0', value: 'Reviewing the result.' }, { kind: 'text', value: 'Created.' }, { kind: 'responseContext', value: finalContext }],
     [{ kind: 'text', value: 'Yes.' }],
   ]);
-  harness.send({ type: 'send', text: '创建文件', model: 'test' });
+  harness.send({ type: 'send', text: 'Create a file', model: 'test' });
   await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'approval')).toBe(true));
-  expect(harness.sent.find(message => message.type === 'language')).toMatchObject({ language: 'zh-CN' });
   const approval = harness.sent.find(message => message.type === 'approval')!;
   harness.send({ type: 'approval', approvalId: approval.approvalId, approved: true });
   await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
@@ -251,7 +250,6 @@ it('keeps provider summaries distinct and carries opaque Responses items across 
   harness.send({ type: 'send', text: 'Please explain the result', model: 'test', useAgent: false });
   await vi.waitFor(() => expect(harness.requests).toHaveLength(3));
   expect(harness.requests[2].messages.some(message => message.responseContext?.items[0]?.phase === 'final_answer')).toBe(true);
-  expect(harness.sent.filter(message => message.type === 'language').at(-1)).toMatchObject({ language: 'en' });
   await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(2));
 });
 
@@ -268,18 +266,6 @@ it('persists a provider summary when the stream fails before producing an answer
   expect(sessions[0].transcript.at(-1)?.text).toBe('Partial summary');
 });
 
-it('automatically follows conversation language through short replies, explicit requests and session restoration', async () => {
-  const harness = panelHarness(Array.from({ length: 4 }, () => [{ kind: 'text', value: 'Done.' } as StreamEvent]));
-  for (const [index, text] of ['请解释这个项目', 'OK', '请用英文回答', '```log\n请检查配置\n```'].entries()) {
-    harness.send({ type: 'send', text, model: 'test', useAgent: false });
-    await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(index + 1));
-    expect(harness.sent.filter(message => message.type === 'language').at(-1)?.language).toBe(index < 2 ? 'zh-CN' : 'en');
-  }
-  const sessions = [...harness.state.values()].find(Array.isArray) as Array<{ id: string }>;
-  harness.send({ type: 'switchSession', sessionId: sessions[0].id });
-  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'restore')).toBe(true));
-  expect(harness.sent.filter(message => message.type === 'language').at(-1)?.language).toBe('en');
-});
 
 it('Stop dismisses approval, prevents writes and new turns, and permits a subsequent task', async () => {
   const secondTool: StreamEvent = { kind: 'toolCall', value: {
