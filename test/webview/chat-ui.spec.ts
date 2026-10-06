@@ -99,11 +99,15 @@ test('shows concise progress before its operation and keeps it collapsible', asy
   await expect(page.locator('.reasoning')).not.toContainText('The configuration is ready.');
 });
 
-test('preserves model selection, supports Chat mode and does not submit IME composition', async ({ page }) => {
+test('preserves model selection, exposes agent modes, and does not submit IME composition', async ({ page }) => {
   await page.locator('#model').selectOption('local-model');
   await dispatch(page, { type: 'models', models: ['gpt-6-luna', 'local-model'], backend: 'remote', hasApiKey: true });
   await expect(page.locator('#model')).toHaveValue('local-model');
-  await page.locator('#chatMode').click();
+  await expect(page.locator('#agentMode')).toHaveCount(0);
+  await expect(page.locator('#chatMode')).toHaveCount(0);
+  await expect(page.locator('#permissionMode option')).toHaveText(['Approve every action', 'Safe auto', 'Full access', 'Ask only']);
+  await page.locator('#permissionMode').selectOption('ask');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setApprovalMode', approvalMode: 'ask' });
   await page.locator('#prompt').fill('Hello');
   await page.locator('#prompt').dispatchEvent('keydown', { key: 'Enter', isComposing: true });
   expect(await page.evaluate(() => window.__messages.some(message => message.type === 'send'))).toBe(false);
