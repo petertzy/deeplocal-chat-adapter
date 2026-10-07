@@ -1,176 +1,49 @@
 # deeplocal-chat-adapter
 
-`deeplocal-chat-adapter` is a VS Code extension that integrates local OpenAI-compatible DeepLocal models and models from other providers into the VS Code chat model picker and its built-in sidebar chat view.
+`deeplocal-chat-adapter` is a VS Code extension that connects local DeepLocal
+models and remote OpenAI-compatible APIs to VS Code chat. It provides a
+sidebar for conversational coding tasks and registers discovered models in the
+VS Code chat model picker.
 
-<img width="1437" height="738" alt="Image" src="https://github.com/user-attachments/assets/64afc29a-32dd-4a6c-844b-379beafe91cc" />
+<img width="1437" height="738" alt="DeepLocal sidebar" src="https://github.com/user-attachments/assets/64afc29a-32dd-4a6c-844b-379beafe91cc" />
 <br>
-<img width="1309" height="737" alt="Image" src="https://github.com/user-attachments/assets/36a5d81c-5efb-493a-80aa-c7b072f9701f" />
+<img width="1309" height="737" alt="DeepLocal task view" src="https://github.com/user-attachments/assets/36a5d81c-5efb-493a-80aa-c7b072f9701f" />
 
 ## Quick Start & Testing (Debug Mode)
-To quickly test and experience the extension's features during development:
 
-   1. Open the project in VS Code.
-   2. Press F5 (or go to the Run and Debug view and click Start Debugging).
-   3. A new Extension Development Host window will open.
-   4. In the new window, open the VS Code Chat view (or use the built-in sidebar chat) to see and test the deeplocal-chat-adapter integration immediately!
+To quickly test the extension during development:
+
+1. Open the project in VS Code.
+2. Press `F5`, or open **Run and Debug** and select **Start Debugging**.
+3. A new Extension Development Host window opens.
+4. In that window, open the VS Code Chat view or the built-in sidebar chat to
+   test the deeplocal-chat-adapter integration.
 
 ## Features
 
-- Use DeepLocal models from VS Code.
-- Chat in the DeepLocal view; move it to the Secondary Side Bar for a right-side layout.
-- Create and edit files by path in the default Agent mode, with inline approval and diff previews.
-- Follow streamed progress updates around Agent tool calls. Updates expand while streaming, collapse before operations, and remain in task history in chronological order; the final answer appears separately. These are model-written action summaries, available when the model emits commentary, rather than hidden internal reasoning.
-- Display provider reasoning summaries separately when using a compatible Responses API model, in both Agent and Chat modes.
-- Automatically follow the conversation language with localized sidebar controls, progress labels, operation titles and approval prompts; no language selector or setup is needed.
-- Let capable models inspect files, search the workspace, read diagnostics, and propose confirmed edits.
-- Restore recent chat sessions after reloading VS Code.
-
-## Coding agent workflow
-
-Open a project folder, choose a tool-capable model, and describe the task in the
-sidebar. Agent mode is enabled by default. For example, ask “Create snake.html
-with a playable snake game.” The agent inspects the workspace and calls
-`create_file`; it no longer rewrites the request as an edit to the active editor.
-`create_file` refuses to overwrite an existing file.
-
-The Open command respects your saved view placement. On a fresh installation,
-right-click the DeepLocal view title and choose **Move View → Secondary Side Bar**
-if you prefer the right side. No proposed VS Code APIs are required.
-
-The sidebar keeps task history and connection/API-key settings in panels opened
-from the top toolbar. The bottom composer contains Agent/Chat mode, model
-selection, and Send/Stop. Model selection and drafts survive webview recreation.
-The conversation shows action cards with the operation, target path, and
-working/done/failed/declined status. Long responses and code blocks are collapsed
-by default, including during streaming; expand them when needed. Reading older
-messages does not force-scroll back to the latest output.
-
-File changes appear in a review card pinned above the composer. Use
-**Preview diff**, then **Approve** or **Reject**. Approved changes are saved and
-opened in the editor; command execution also requires approval. Tool results
-are expandable and retained in the conversation. Existing unsaved edits and
-files changed during review are protected. The agent uses results to continue
-working. It has a high safety guard of 100 tool-use turns by default, capped at
-1000 when configured, so ordinary tasks do not stop at a low arbitrary step
-count; if the guard is reached it reports incomplete work rather than claiming
-success.
-Create, modify, and delete are distinct actions. `delete_file` is reserved for an
-explicit deletion request, requires approval, shows a deletion diff, and moves
-one file to the trash. Directories and unsaved documents are rejected; an
-unsupported trash operation is reported as an error, without a permanent-delete fallback.
-
-**Stop** cancels the current request, pending approval, and a running command;
-already applied changes remain. Session switching is disabled while working.
-Choose Chat mode for discussion without tools. This workflow follows
-[Cline's file review and tool execution approach](https://github.com/cline/cline#edits-code-across-your-project);
-it does not include Cline's checkpoints, browser automation, or background terminals.
-HTML files open in the editor; open the saved file in a browser to play the game.
-
-## Reasoning summaries and display language
-
-Open the sidebar **Settings → API protocol** and select **Responses** for a
-provider/model that supports `/responses`. Leave **Reasoning summaries** enabled
-to request `reasoning.summary: "auto"`. This uses the same streaming inference
-request as the answer and tool calls; there is no second summarization request.
-The sidebar shows separate **Reasoning summary**, **Progress update**, tool
-activity and final-answer entries. Summaries remain available in history and
-partial summaries survive cancellation or stream errors. Providers may return
-no summary, even when one was requested; the UI does not invent one.
-
-Chat Completions remains the default for existing local and remote setups.
-If a Responses model rejects summaries, turn summaries **Off**. If the service
-does not implement Responses, select **Chat Completions** to keep the existing
-progress-and-tools workflow. Errors explain these choices; requests are not
-silently retried against another endpoint. The settings are
-`deeplocal.apiMode`, `deeplocal.remote.apiMode` and `deeplocal.reasoningSummary`.
-Summary rendering is a sidebar feature; the VS Code language-model provider
-continues to emit its standard text and tool-call parts.
-
-Responses requests use `store: false` and replay complete output items,
-including encrypted reasoning state and assistant phases, for continued tool
-use. These items are retained in the workspace's chat history and sent back
-only to the same backend URL/model. They are not displayed or logged. Changing
-provider/model keeps ordinary messages and tool results but omits that opaque
-state. The adapter displays only provider summary text, not raw reasoning
-events. See [OpenAI's reasoning summary documentation](https://developers.openai.com/api/docs/guides/reasoning#reasoning-summaries).
-
-Language follows the conversation automatically, initially using VS Code's
-display language when supported. Short or ambiguous replies inherit the
-conversation language; fenced code, quoted lines, URLs and paths do not change
-it. You can also specify a preferred response language directly in the chat.
-Session switching and restoration recover the language from that conversation.
-There is no language selector. The former `deeplocal.displayLanguage` setting
-is no longer read, so an old manual choice cannot override automatic detection.
-Other interface languages are not yet translated. Model progress and answers
-are prompted to follow the user's language, including languages beyond these
-two. Provider summaries are shown as received; their language is controlled by
-the model and is not guaranteed. Code, paths, model IDs, raw tool output and
-provider diagnostics are kept verbatim. Automatic localization changes interface
-copy, not the content of previous messages.
-
-## Chat session scope
-
-Chat sessions are stored in VS Code `workspaceState`, so each folder or
-multi-root workspace has its own session list and active session. Workspace
-identity is derived from the workspace file when available, otherwise from all
-workspace-folder URIs. Empty windows have no durable VS Code workspace identity
-and therefore intentionally use the shared `empty` scope.
-
-On upgrade, sessions written by versions before workspace scoping are migrated
-once into the first workspace opened. The legacy global values are retained so
-they remain recoverable; later workspaces start with a new session list. This
-is the documented fallback because the old format did not record ownership.
+- Use discovered local DeepLocal models or a remote OpenAI-compatible API.
+- Chat in the dedicated DeepLocal sidebar, which can be moved to VS Code's
+  Secondary Side Bar.
+- Run coding tasks with workspace-aware tools for reading, searching, editing,
+  creating, opening, and trashing individual files, as well as running commands.
+- Review file changes before approval, with a diff preview where available.
+- Choose an approval mode: approve every operation, automatically allow safe
+  operations, allow all operations, or use discussion-only mode.
+- View streamed progress updates, tool activity, and final answers separately.
+- Use the Responses API with compatible endpoints to display provider reasoning
+  summaries separately from the answer.
+- Keep recent chat sessions per workspace across webview recreation and reloads.
 
 ## Requirements
 
-Model discovery preserves optional `/models` hints: `max_input_tokens` (or
-`context_length`), `max_output_tokens`, `capabilities.tool_calling` (or
-`supports_tool_calls`), `protocol`, and `endpoint`. Positive integer limits and
-boolean capability hints override the configured defaults. Missing or invalid
-hints use `deeplocal.maxInputTokens`, `deeplocal.maxOutputTokens`, and
-`deeplocal.enableToolCalling`; disable the latter for a conservative fallback
-when the server provides no tool metadata. The model tooltip explains this
-fallback. Image input remains disabled because this adapter sends text only.
+- VS Code 1.104 or later.
+- Node.js and npm to build, test, or package the extension.
+- For the default local backend, a running [DeepLocal service](https://github.com/petertzy/deepLocal)
+  exposing an OpenAI-compatible API. Its default URL is
+  `http://127.0.0.1:14567/v1`.
 
-Models explicitly lacking tool support remain available for plain chat; the
-sidebar reports the reason and asks you to select Chat mode or a tool-capable model. The adapter supports the
-`openai` and `openai-compatible` protocol hints, plus the selected
-`chat-completions` or `responses` protocol. Endpoint hints must match the selected
-API mode (`/chat/completions` or `/responses`, optionally prefixed with `/v1`). Other declared
-protocols/endpoints produce a clear error before sending. Metadata never
-redirects credentials or requests to another URL.
-
-Before using the extension, start the separate local DeepLocal service and keep it running:
-
-```text
-https://github.com/petertzy/deepLocal
-```
-
-## Backend configuration
-
-**Check Connection** validates the effective `<base URL>/models` endpoint and
-succeeds only for a non-empty `data` array whose entries have non-empty string
-IDs. A configured remote model fallback does not count as a successful check.
-The base URL must use HTTP(S) and contain no embedded credentials, query, or
-fragment; store credentials using the API-key control instead. Diagnostic
-messages distinguish configuration, network, timeout, HTTP, JSON, schema, and
-empty-model failures, show the checked endpoint, and offer **Open Settings**.
-Response bodies, authorization headers, and transport exception details are
-excluded from check diagnostics. The timeout covers both headers and body.
-This check validates model discovery; use **Test Remote API Request** to verify
-remote chat generation separately.
-
-Streamed tool calls are assembled independently by index and delivered in index
-order after completion. Text accompanying tool deltas is preserved. A missing
-index is accepted for a single call or when its ID identifies an existing call;
-ambiguous parallel deltas produce an error. Tool arguments must be a complete
-JSON object (use `{}` for tools with no arguments). Invalid arguments, missing
-IDs/names, interrupted streams, and truncated finish reasons prevent tool
-execution. Errors retain streamed text and omit raw argument payloads.
-
-Local DeepLocal remains the default backend at `http://127.0.0.1:14567/v1`. The extension contributes one VS Code chat provider named **DeepLocal / OpenAI-compatible**; its models are labeled `deeplocal` locally and `openai` remotely in the model picker. Use **deeplocal-chat-adapter: Open Settings** and set `deeplocal.backend` to `remote` to use an OpenAI-compatible API. The sidebar's **Change** button also switches the backend. Configure `deeplocal.remote.baseUrl` (default `https://api.openai.com/v1`) and `deeplocal.remote.model` (default `gpt-4.1-mini`), then run **deeplocal-chat-adapter: Set Remote API Key**. The key is stored in VS Code SecretStorage and is not part of settings or the repository. Run **Check Connection** to verify the selected backend. Set `deeplocal.backend` back to `local` to return to DeepLocal.
-
-Remote API requests may incur provider charges. Use **deeplocal-chat-adapter: Test Remote API Request** to send a minimal streaming chat request without tools; this helps distinguish endpoint/model compatibility from tool-schema issues. Remote access is optional; automated tests use a fake OpenAI-compatible server and never require a real API key or make billable requests. Model discovery uses `/v1/models`; if it is unavailable, the configured remote model remains selectable for manual use.
+The remote backend is optional. It works with an OpenAI-compatible service and
+may incur charges from that provider.
 
 ## Quick Start
 
@@ -187,7 +60,10 @@ Remote API requests may incur provider charges. Use **deeplocal-chat-adapter: Te
    npm run install:local
    ```
 
-   This installs dependencies, builds a VSIX package, and installs it into your normal VS Code installation. For development, use the faster workflow in [Contributing](CONTRIBUTING.md).
+   This installs dependencies, builds a VSIX package, and installs it into your
+   normal VS Code installation. The script requires the `code` command to be
+   available in your shell. For development, use the debug workflow above or
+   the guidance in [CONTRIBUTING.md](CONTRIBUTING.md).
 
    You can also run the script directly:
 
@@ -214,37 +90,143 @@ Remote API requests may incur provider charges. Use **deeplocal-chat-adapter: Te
 
 6. Select a DeepLocal model in the VS Code chat model picker.
 
-## Open The Right Sidebar
+## Use the sidebar
 
-1. Open the Command Palette:
+Open a project folder, run **deeplocal-chat-adapter: Open**, choose a model,
+and enter a task. The selected approval mode determines whether the sidebar
+operates as an agent or as a discussion-only chat.
 
-   - macOS: `Command+Shift+P`
-   - Windows/Linux: `Ctrl+Shift+P`
+| Mode | Behavior |
+| --- | --- |
+| **Approve every action** | Requests confirmation before every tool call, including read-only operations. |
+| **Safe auto** (default) | Automatically performs ordinary workspace operations; asks before sensitive paths, potentially unsafe commands, and deletion. |
+| **Full access** | Runs agent operations without approval prompts. Use only when you trust the task and model. |
+| **Ask only** | Disables agent operations; use it for explanation and planning. |
 
-2. Run:
+Agent mode requires an open workspace folder and a model that advertises tool
+calling support. The available tools can inspect the workspace, read files and
+diagnostics, search, edit or create files, open files, run commands, and move a
+single explicitly requested file to the system trash. Paths are restricted to
+the workspace. `create_file` does not overwrite an existing file.
 
-   ```text
-   deeplocal-chat-adapter: Open
-   ```
+Use **Stop** to cancel the active request or pending approval. Changes already
+applied before cancellation remain in place.
 
-The chat view opens at its saved location. To use VS Code's Secondary Side Bar (the right sidebar), move the DeepLocal view there. If the right sidebar is hidden:
+The sidebar stores up to 20 recent sessions for each workspace in VS Code
+`workspaceState`. Each stored session retains recent conversation history and
+its rendered transcript. Empty VS Code windows share one session scope because
+they do not have a durable workspace identity.
 
-1. Open the Command Palette:
+### Sidebar placement
 
-   - macOS: `Command+Shift+P`
-   - Windows/Linux: `Ctrl+Shift+P`
+The Open command reveals the sidebar at its saved VS Code location. To put it
+on the right, right-click the DeepLocal view title and select **Move View →
+Secondary Side Bar**. If necessary, first run **View: Toggle Secondary Side Bar
+Visibility** from the Command Palette.
 
-2. Run:
+## Configure a backend
 
-   ```text
-   View: Toggle Secondary Side Bar Visibility
-   ```
+The extension uses the local DeepLocal backend by default. Open the sidebar
+settings and choose **Change** under Provider, or open
+**deeplocal-chat-adapter: Open Settings** and set `deeplocal.backend`.
 
-3. If the `deeplocal-chat-adapter` view is still on the left side, drag it from the left sidebar to the right sidebar.
+For a remote backend:
+
+1. Set `deeplocal.backend` to `remote`.
+2. Set `deeplocal.remote.baseUrl` and `deeplocal.remote.model` as needed.
+3. Use **Set API key** in the sidebar or run
+   **deeplocal-chat-adapter: Set Remote API Key**. The remote key is stored in
+   VS Code SecretStorage, not in workspace settings.
+4. Run **deeplocal-chat-adapter: Check Connection** to verify model discovery.
+   Use **deeplocal-chat-adapter: Test Remote API Request** to test a minimal
+   streamed request to the selected remote model.
+
+Model discovery uses `<base URL>/models`. A remote backend falls back to the
+configured `deeplocal.remote.model` when discovery is unavailable, but that
+fallback does not make a connection check succeed. Local model discovery must
+return models successfully.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `deeplocal.backend` | `local` | Selects the local DeepLocal or remote OpenAI-compatible backend. |
+| `deeplocal.baseUrl` | `http://127.0.0.1:14567/v1` | Local API base URL. |
+| `deeplocal.apiKey` | empty | Optional bearer token for the local API; stored as a machine-scoped setting. |
+| `deeplocal.remote.baseUrl` | `https://api.openai.com/v1` | Remote API base URL. |
+| `deeplocal.remote.model` | `gpt-4.1-mini` | Remote fallback model ID. |
+| `deeplocal.apiMode` | `chat-completions` | Protocol used with the local backend. |
+| `deeplocal.remote.apiMode` | `chat-completions` | Protocol used with the remote backend. |
+| `deeplocal.reasoningSummary` | `auto` | Requests Responses API reasoning summaries when supported; set to `off` to disable them. |
+| `deeplocal.requestTimeout` | `120000` | Request timeout in milliseconds. |
+| `deeplocal.maxInputTokens` | `131072` | Fallback advertised maximum input tokens. |
+| `deeplocal.maxOutputTokens` | `16384` | Fallback maximum output tokens. |
+| `deeplocal.enableToolCalling` | `true` | Fallback tool-calling capability when model metadata does not specify it. |
+| `deeplocal.injectSystemPrompt` | `true` | Adds the extension's compact coding-assistant prompt. |
+| `deeplocal.agentMaxTurns` | `100` | Agent tool-use safety limit, configurable from 1 through 1000. |
+| `deeplocal.approvalMode` | `safe` | Default approval behavior for sidebar agent tasks. |
+| `deeplocal.logLevel` | `info` | Extension output logging level. |
+
+Base URLs must use HTTP(S) and must not include embedded credentials, a query,
+or a fragment. The connection check reports configuration, network, timeout,
+HTTP, JSON, schema, or empty-model failures without exposing authorization
+headers or response bodies.
+
+## Protocols, model metadata, and reasoning summaries
+
+**Chat Completions** is the default protocol. Select **Responses** only when
+the selected backend and model support the Responses API. In Responses mode,
+the extension can request `reasoning.summary: "auto"` and renders any provider
+summary as a separate sidebar entry. Providers may return no summary. Disable
+`deeplocal.reasoningSummary` for models that reject summaries.
+
+Responses requests use `store: false`. To continue an agent task, the extension
+keeps opaque Responses output items only in that workspace's chat history and
+sends them back only to the same backend URL and model. Raw reasoning content
+is neither displayed nor logged.
+
+The extension reads optional `/models` metadata for input/output token limits,
+tool-calling capability, protocol, and endpoint. Valid metadata overrides the
+fallback settings above. Models without tool support remain available for
+discussion-only chat. The adapter sends text input only; image input is not
+supported.
+
+## Commands
+
+- **deeplocal-chat-adapter: Open** — Reveal the sidebar.
+- **deeplocal-chat-adapter: New Session** — Start a sidebar session.
+- **deeplocal-chat-adapter: Refresh Models** — Refresh the active backend's
+  discovered models.
+- **deeplocal-chat-adapter: Check Connection** — Validate the active backend's
+  models endpoint.
+- **deeplocal-chat-adapter: Test Remote API Request** — Test remote streamed
+  chat generation without tools.
+- **deeplocal-chat-adapter: Open Settings** — Open this extension's settings.
+- **deeplocal-chat-adapter: Set Remote API Key** / **Clear Remote API Key** —
+  Manage the remote credential in SecretStorage.
+
+## Development and tests
+
+```bash
+npm run check
+```
+
+This runs TypeScript checking, linting, and unit tests. Additional commands:
+
+- `npm run watch` — Watch the bundle and type checks.
+- `npm run test:watch` — Watch unit tests.
+- `npm run test:webview` — Run browser tests for the sidebar. Run
+  `npx playwright install chromium` once if Chromium is not installed.
+- `npm run test:integration` — Compile and launch an isolated VS Code Extension
+  Host against a local fake OpenAI-compatible server.
+- `npm run package` — Build the production bundle.
+- `npm run package:vsix` — Create a distributable VSIX.
+
+Unit, webview, and integration tests do not require a live DeepLocal service or
+a billable remote API key.
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and pull request guidance.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+validation, and pull request guidance.
 
 ## License
 
