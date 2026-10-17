@@ -6,9 +6,10 @@ import { Logger } from './logger';
 import { ChatMessage, ToolCall, ResponseContext, StreamEvent } from './protocol';
 import { renderChatHtml } from './chat-webview';
 import { toolActivity, ToolActivity } from './tool-activity';
+import { requireWorkspaceFolder, sameWorkspace, workspaceLabel } from './agent-workspace';
 
 interface WebviewMessage {
-  type: 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey' | 'setApiMode' | 'setSummary' | 'setApprovalMode' | 'copy';
+  type: 'selectWorkspace' | 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey' | 'setApiMode' | 'setSummary' | 'setApprovalMode' | 'copy';
   requestId?: string;
   apiMode?: 'chat-completions' | 'responses';
   summary?: 'off' | 'auto';
@@ -43,6 +44,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   private static readonly activeSessionKey = 'deeplocal.activeSessionId';
   private static readonly migrationKey = 'deeplocal.sessions.migrated.v1';
 
+  private selectedWorkspace: vscode.WorkspaceFolder | undefined;
+  private taskWorkspace: vscode.WorkspaceFolder | undefined;
+  private choosingWorkspace = false;
   private sessions: ChatSession[] = [];
   private activeSessionId: string;
   private activeRequestId: string | undefined;
@@ -63,10 +67,49 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       clear: () => Promise<void>;
     },
   ) {
+    this.context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(event => {
+      if (this.taskWorkspace && event.removed.some(folder => sameWorkspace(folder, this.taskWorkspace!))) {
+        this.post({ type: 'notice', message: 'The task workspace folder was removed. Stopping the task; select a folder before continuing.' });
+        this.stopTask();
+      }
+      if (this.selectedWorkspace && event.removed.some(folder => sameWorkspace(folder, this.selectedWorkspace!))) {
+        this.selectedWorkspace = undefined;
+      }
+      this.postWorkspace();
+    }));
     this.sessions = this.loadSessions().map(repairTranscript);
     this.activeSessionId = this.context.workspaceState.get<string>(this.scopedActiveSessionKey, this.sessions[0].id);
     if (!this.sessions.some((session) => session.id === this.activeSessionId)) {
       this.activeSessionId = this.sessions[0].id;
+    }
+  }
+
+  private currentWorkspace(): vscode.WorkspaceFolder | undefined {
+    try { return requireWorkspaceFolder(this.selectedWorkspace); } catch { return undefined; }
+  }
+
+  private postWorkspace(): void {
+    const folder = this.taskWorkspace ?? this.currentWorkspace();
+    this.post({
+      type: 'workspace',
+      label: folder ? workspaceLabel(folder) : vscode.workspace.workspaceFolders?.length ? 'Choose workspace folder' : 'No folder open',
+      path: folder?.uri.toString(),
+      canSelect: !this.activeRequestId && !this.choosingWorkspace && (vscode.workspace.workspaceFolders?.length ?? 0) > 1,
+    });
+  }
+
+  private async selectWorkspace(): Promise<void> {
+    if (this.activeRequestId || this.choosingWorkspace) return;
+    this.choosingWorkspace = true;
+    this.postWorkspace();
+    try {
+      const selected = await vscode.window.showQuickPick((vscode.workspace.workspaceFolders ?? []).map(folder => ({
+        label: folder.name, description: folder.uri.toString(), folder,
+      })), { placeHolder: 'Choose the folder for agent operations', title: 'Agent workspace folder' });
+      if (selected) this.selectedWorkspace = requireWorkspaceFolder(selected.folder);
+    } finally {
+      this.choosingWorkspace = false;
+      this.postWorkspace();
     }
   }
 
@@ -116,7 +159,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       } else pending.resolve(message.approved === true);
       return;
     }
+    if (message.type === 'ready') this.postWorkspace();
     if (this.activeRequestId) return;
+    if (message.type === 'selectWorkspace') { await this.selectWorkspace(); return; }
     if (message.type === 'setApiMode' && ['chat-completions', 'responses'].includes(message.apiMode ?? '')) {
       const key = getConfig().backend === 'remote' ? 'remote.apiMode' : 'apiMode';
       await vscode.workspace.getConfiguration('deeplocal').update(key, message.apiMode, vscode.ConfigurationTarget.Global);
@@ -236,8 +281,10 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       this.post({ type: 'assistantDone' });
       return;
     }
-    if (effectiveAgent && !vscode.workspace.workspaceFolders?.length) {
-      this.postError('Open a project folder in VS Code before starting an agent task.');
+    const folder = this.currentWorkspace();
+    if (effectiveAgent && (!folder || this.choosingWorkspace)) {
+      this.postWorkspace();
+      this.postError(this.choosingWorkspace ? 'Finish choosing a workspace folder before starting a task.' : 'Open or choose a workspace folder before starting an agent task.');
       this.post({ type: 'assistantDone' });
       return;
     }
@@ -245,6 +292,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     this.activeRequestId = requestId;
     const controller = new AbortController();
     this.taskController = controller;
+    this.taskWorkspace = effectiveAgent ? folder : undefined;
+    this.postWorkspace();
     const userMessage = text;
     const assistantItem: PersistedChatItem = { role: 'DeepLocal', text: '' };
     let finalContext: ResponseContext | undefined;
@@ -303,6 +352,10 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         });
       }
 
+      if (effectiveAgent && folder) {
+        messages.unshift({ role: 'system', content: `Active workspace folder for this task: ${folder.name} (${folder.uri.toString()}). All tool paths are relative to this root. Earlier history may refer to other roots; inspect this folder before acting.` });
+      }
+
       const onDelta = (delta: string) => {
         controller.signal.throwIfAborted();
         assistantItem.text += delta;
@@ -311,7 +364,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       };
       controller.signal.throwIfAborted();
       answer = effectiveAgent
-        ? await this.runAgentRequest(requestId, model, messages, onDelta, controller.signal, session, assistantItem, onSummary, onContext)
+        ? await this.runAgentRequest(requestId, model, messages, onDelta, controller.signal, session, assistantItem, onSummary, onContext, folder!)
         : await this.runChatRequest(requestId, model, messages, onDelta, onSummary, onContext);
       controller.signal.throwIfAborted();
 
@@ -344,6 +397,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     } finally {
       this.activeRequestId = undefined;
       this.taskController = undefined;
+      this.taskWorkspace = undefined;
+      this.postWorkspace();
       this.post({ type: 'assistantDone', outcome });
     }
   }
@@ -385,12 +440,14 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     assistantItem: PersistedChatItem,
     onSummary: (event: Extract<StreamEvent, { kind: 'summary' }>) => void,
     onContext: (context: ResponseContext) => void,
+    folder: vscode.WorkspaceFolder,
   ): Promise<string> {
     const workingMessages = [...messages];
     let finalAnswer = '';
 
     for (let turn = 0; turn < getConfig().agentMaxTurns; turn += 1) {
       signal.throwIfAborted();
+      requireWorkspaceFolder(folder);
       session.transcript = session.transcript.filter((item) => item !== assistantItem);
       session.transcript.push(assistantItem);
       this.post({ type: 'status', message: `Working · step ${turn + 1}` });
@@ -452,6 +509,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         this.post({ type: 'toolStart', activity });
         const result = await invokeAgentTool(call.id, call.function.name, call.function.arguments, {
           signal,
+          workspaceFolder: folder,
           approvalMode: getConfig().approvalMode ?? 'safe',
           approve: (message, preview) => this.requestApproval(message, signal, preview),
         });

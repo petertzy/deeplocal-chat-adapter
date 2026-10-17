@@ -110,6 +110,20 @@ diagnostics, search, edit or create files, open files, run commands, and move a
 single explicitly requested file to the system trash. Paths are restricted to
 the workspace. `create_file` does not overwrite an existing file.
 
+In a multi-root window, use the **Workspace** button above the conversation to
+choose the folder for agent operations. The picker shows each folder's URI to
+distinguish duplicate names. A single open folder is selected automatically;
+with several folders, choose one before sending an agent task. Cancelling the
+picker keeps the previous choice. The choice lasts until the extension reloads.
+
+The selected folder stays visible and cannot be changed while a task runs.
+Removing that folder stops the task; already applied changes are retained.
+File discovery, summaries, diagnostics, editor context, relative tool paths and
+command working directories use the selected folder. Absolute paths and URI
+inputs are rejected by file tools. Conversation history is retained when you
+change folders. Existing symlink following and command permissions are unchanged;
+the folder selection is not an operating-system sandbox.
+
 `read_file` reads UTF-8 text. Files containing NUL bytes or invalid UTF-8 return
 an error identifying the workspace-relative path instead of their contents.
 

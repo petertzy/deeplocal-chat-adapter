@@ -26,6 +26,9 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   .muted, small { color: var(--vscode-descriptionForeground, #999); }
   .shell { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; position: relative; overflow: hidden; }
   header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--vscode-panel-border, #ffffff18); }
+  .workspace-row { padding: 4px 12px 0; min-width: 0; }
+  #workspaceButton { width: 100%; text-align: left; font-size: 11px; overflow-wrap: anywhere; }
+  #workspaceButton:disabled { opacity: 1; color: var(--vscode-descriptionForeground, #999); }
   .brand { font-size: 13px; font-weight: 650; letter-spacing: .2px; }
   .header-actions { display: flex; margin-left: auto; gap: 2px; }
   .icon { width: 28px; height: 28px; padding: 5px; display: inline-flex; align-items: center; justify-content: center; }
@@ -96,6 +99,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
 </head>
 <body>
 <div class="shell" id="shell" data-busy="false">
+  <div>
   <header>
     <span class="brand">DeepLocal</span><span id="taskTitle">New task</span>
     <div class="header-actions">
@@ -104,6 +108,8 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       <button id="settingsButton" class="icon" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel"><svg viewBox="0 0 16 16"><path d="M3 2v12M8 2v12M13 2v12M1 5h4M6 11h4M11 6h4"/></svg></button>
     </div>
   </header>
+  <div class="workspace-row"><button id="workspaceButton" aria-label="Choose workspace folder" aria-describedby="workspaceLabel" disabled><span id="workspaceLabel">Workspace: No folder open</span></button></div>
+  </div>
   <main id="messages" aria-label="Conversation">
     <section id="welcome" class="welcome">
       <div class="eyebrow">Your workspace, in action</div>
@@ -157,7 +163,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   const summaries = new Map();
   const copies = new Map();
   let copyRequestId = 0;
-  let busy = false, activeSessionId;
+  let busy = false, activeSessionId, canSelectWorkspace = false;
   let currentAssistant, currentReasoning, assistantText = '', reasoningText = '', approvalId, failed = false;
   let selectedModel = saved.model || '', selectedBackend = saved.backend, approvalMode = saved.approvalMode || 'safe';
   let scheduledRender;
@@ -172,6 +178,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     byId('shell').dataset.busy = String(value);
     for (const id of ['session', 'newSession', 'deleteSession', 'historyButton', 'backendButton', 'refresh', 'model', 'permissionMode', 'setRemoteKeyButton', 'clearRemoteKeyButton', 'apiMode', 'reasoningSummary']) byId(id).disabled = value || (id === 'reasoningSummary' && byId('apiMode').value !== 'responses');
     send.hidden = value; stop.hidden = !value; stop.disabled = false; syncSend();
+    byId('workspaceButton').disabled = value || !canSelectWorkspace;
     updateComposerState();
   }
   function updateComposerState() {
@@ -308,6 +315,12 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   window.addEventListener('message', event => {
     const msg = event.data;
     if (msg.type === 'summaryDelta') addSummary(msg.id, msg.text);
+    if (msg.type === 'workspace') {
+      byId('workspaceLabel').textContent = 'Workspace: ' + msg.label;
+      byId('workspaceButton').title = msg.path || msg.label;
+      canSelectWorkspace = msg.canSelect === true;
+      byId('workspaceButton').disabled = busy || !canSelectWorkspace;
+    }
     if (msg.type === 'models') {
       approvalMode = msg.approvalMode || 'safe'; byId('permissionMode').value = approvalMode;
       byId('apiMode').value = msg.apiMode || 'chat-completions';
@@ -431,7 +444,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   stop.addEventListener('click', () => { stop.disabled = true; status.textContent = 'Stopping…'; vscode.postMessage({ type: 'stop' }); });
   prompt.addEventListener('input', () => { if (activeSessionId) drafts.set(activeSessionId, prompt.value); remember(); resizePrompt(); });
   prompt.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send.click(); } });
-  for (const [id, type] of [['refresh', 'refreshModels'], ['backendButton', 'setBackend'], ['setRemoteKeyButton', 'setRemoteApiKey'], ['clearRemoteKeyButton', 'clearRemoteApiKey'], ['newSession', 'newSession']]) byId(id).addEventListener('click', () => vscode.postMessage({ type }));
+  for (const [id, type] of [['workspaceButton', 'selectWorkspace'], ['refresh', 'refreshModels'], ['backendButton', 'setBackend'], ['setRemoteKeyButton', 'setRemoteApiKey'], ['clearRemoteKeyButton', 'clearRemoteApiKey'], ['newSession', 'newSession']]) byId(id).addEventListener('click', () => vscode.postMessage({ type }));
   byId('deleteSession').addEventListener('click', () => vscode.postMessage({ type: 'deleteSession', sessionId: byId('session').value }));
   byId('session').addEventListener('change', () => { toggleSheet('', false); vscode.postMessage({ type: 'switchSession', sessionId: byId('session').value }); });
   model.addEventListener('change', () => { selectedModel = model.value; model.title = model.value; remember(); syncSend(); });

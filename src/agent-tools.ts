@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { ChatMessage, ChatTool } from './protocol';
 import { parseToolInput } from './tool-input';
 import { ApprovalMode } from './config';
+import { isInWorkspace, requireWorkspaceFolder, workspaceRelativePath } from './agent-workspace';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +22,7 @@ export interface AgentToolResult {
 
 export interface AgentToolOptions {
   signal?: AbortSignal;
+  workspaceFolder?: vscode.WorkspaceFolder;
   approve?: (message: string, preview?: () => Promise<void>) => Promise<boolean>;
   approvalMode?: ApprovalMode;
 }
@@ -195,43 +197,54 @@ export async function invokeAgentTool(callId: string, name: string, rawArguments
     if (options.approvalMode === 'ask') {
       return result(callId, name, 'Ask-only mode does not permit agent operations. Explain the proposed action instead.', 'declined');
     }
+    // Capture once, before any approval or other await.
+    const folder = requireWorkspaceFolder(options.workspaceFolder);
+    options = { ...options, workspaceFolder: folder };
     if (options.approvalMode === 'every' && !isActionTool(name)) {
       const approved = await approveIfNeeded(name, args, `Allow tool: ${name}`, options);
       options.signal?.throwIfAborted();
       if (!approved) return result(callId, name, 'User declined tool execution. Do not retry without new instructions.', 'declined');
     }
-    switch (name) {
-      case 'get_workspace_summary':
-        return result(callId, name, await getWorkspaceSummary());
-      case 'get_active_file':
-        return result(callId, name, getActiveFile());
-      case 'get_selection':
-        return result(callId, name, getSelection(args));
-      case 'get_diagnostics':
-        return result(callId, name, getDiagnostics(args));
-      case 'open_file':
-        return result(callId, name, await openFile(args));
-      case 'list_workspace_files':
-        return result(callId, name, await listWorkspaceFiles(args));
-      case 'read_file':
-        return result(callId, name, await readFile(args));
-      case 'search_workspace':
-        return result(callId, name, await searchWorkspace(args));
-      case 'write_file':
-        return result(callId, name, await writeFile(args, options));
-      case 'create_file':
-        return result(callId, name, await writeFile(args, options, true));
-      case 'delete_file':
-        return result(callId, name, await deleteFile(args, options));
-      case 'replace_in_file':
-        return result(callId, name, await replaceInFile(args, options));
-      case 'run_command':
-        return result(callId, name, await runCommand(args, options));
-      default:
-        return result(callId, name, `Unknown tool: ${name}`, 'error');
-    }
+    requireWorkspaceFolder(folder);
+    const content = await invokeWorkspaceTool(name, args, options, folder);
+    options.signal?.throwIfAborted();
+    requireWorkspaceFolder(folder);
+    return result(callId, name, content);
   } catch (error) {
     return result(callId, name, `Tool error: ${messageOf(error)}`, 'error');
+  }
+}
+
+async function invokeWorkspaceTool(name: string, args: Record<string, unknown>, options: AgentToolOptions, folder: vscode.WorkspaceFolder): Promise<string> {
+  switch (name) {
+    case 'get_workspace_summary':
+      return await getWorkspaceSummary(folder);
+    case 'get_active_file':
+      return getActiveFile(folder);
+    case 'get_selection':
+      return getSelection(args, folder);
+    case 'get_diagnostics':
+      return getDiagnostics(args, folder);
+    case 'open_file':
+      return await openFile(args, folder);
+    case 'list_workspace_files':
+      return await listWorkspaceFiles(args, folder);
+    case 'read_file':
+      return await readFile(args, folder);
+    case 'search_workspace':
+      return await searchWorkspace(args, folder);
+    case 'write_file':
+      return await writeFile(args, options);
+    case 'create_file':
+      return await writeFile(args, options, true);
+    case 'delete_file':
+      return await deleteFile(args, options);
+    case 'replace_in_file':
+      return await replaceInFile(args, options);
+    case 'run_command':
+      return await runCommand(args, options);
+    default:
+      throw new Error(`Unknown tool: ${name}`);
   }
 }
 
@@ -259,22 +272,23 @@ function unsafeCommand(command: string, args: string[]): boolean {
 }
 
 async function approveIfNeeded(name: string, args: Record<string, unknown>, message: string, options: AgentToolOptions, preview?: () => Promise<void>): Promise<boolean> {
+  options.signal?.throwIfAborted();
+  requireWorkspaceFolder(options.workspaceFolder);
   if (!needsApproval(name, args, options.approvalMode)) return true;
   return options.approve ? options.approve(message, preview) : confirm(message);
 }
 
-async function getWorkspaceSummary(): Promise<string> {
-  const folder = workspaceFolder();
-  const files = await vscode.workspace.findFiles('{package.json,tsconfig.json,pyproject.toml,requirements.txt,Cargo.toml,go.mod,README.md}', '**/{node_modules,.git,dist,out}/**', 20);
+async function getWorkspaceSummary(folder: vscode.WorkspaceFolder): Promise<string> {
+  const files = (await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '{package.json,tsconfig.json,pyproject.toml,requirements.txt,Cargo.toml,go.mod,README.md}'), '**/{node_modules,.git,dist,out}/**', 20)).filter(file => isInWorkspace(file, folder));
   const lines = [
     `Workspace: ${folder.name}`,
     `Root: ${folder.uri.fsPath}`,
     '',
     'Project files:',
-    ...(files.length ? files.map((file) => `- ${vscode.workspace.asRelativePath(file)}`) : ['- none found']),
+    ...(files.length ? files.map((file) => `- ${workspaceRelativePath(file, folder)}`) : ['- none found']),
   ];
 
-  const packageJson = files.find((file) => vscode.workspace.asRelativePath(file) === 'package.json');
+  const packageJson = files.find((file) => workspaceRelativePath(file, folder) === 'package.json');
   if (packageJson) {
     try {
       const raw = new TextDecoder().decode(await vscode.workspace.fs.readFile(packageJson));
@@ -289,12 +303,13 @@ async function getWorkspaceSummary(): Promise<string> {
   return lines.join('\n');
 }
 
-function getActiveFile(): string {
+function getActiveFile(folder: vscode.WorkspaceFolder): string {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     return 'No active editor.';
   }
-  const relative = vscode.workspace.asRelativePath(editor.document.uri);
+  if (!isInWorkspace(editor.document.uri, folder)) return 'The active editor is outside the selected workspace folder.';
+  const relative = workspaceRelativePath(editor.document.uri, folder);
   const selection = editor.selection.isEmpty
     ? 'No selection.'
     : `Selection lines ${editor.selection.start.line + 1}-${editor.selection.end.line + 1}.`;
@@ -306,21 +321,22 @@ function getActiveFile(): string {
   ].join('\n');
 }
 
-function getSelection(args: Record<string, unknown>): string {
+function getSelection(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): string {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     return 'No active editor.';
   }
+  if (!isInWorkspace(editor.document.uri, folder)) return 'The active editor is outside the selected workspace folder.';
   if (editor.selection.isEmpty) {
     return 'No selected text.';
   }
   return truncate(editor.document.getText(editor.selection), boundedNumber(args.maxChars, 20000, MAX_TEXT_CHARS));
 }
 
-function getDiagnostics(args: Record<string, unknown>): string {
+function getDiagnostics(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): string {
   const maxResults = boundedNumber(args.maxResults, 80, MAX_RESULT_COUNT);
   const target = typeof args.path === 'string' && args.path.trim()
-    ? resolveWorkspacePath(args.path)
+    ? resolveWorkspacePath(args.path, folder)
     : undefined;
   const entries = target
     ? [[target, vscode.languages.getDiagnostics(target)] as const]
@@ -328,23 +344,24 @@ function getDiagnostics(args: Record<string, unknown>): string {
   const lines: string[] = [];
 
   for (const [uri, diagnostics] of entries) {
+    if (!isInWorkspace(uri, folder)) continue;
     for (const diagnostic of diagnostics) {
       if (lines.length >= maxResults) {
         break;
       }
       const severity = vscode.DiagnosticSeverity[diagnostic.severity];
-      lines.push(`${vscode.workspace.asRelativePath(uri)}:${diagnostic.range.start.line + 1}:${diagnostic.range.start.character + 1}: ${severity}: ${diagnostic.message}`);
+      lines.push(`${workspaceRelativePath(uri, folder)}:${diagnostic.range.start.line + 1}:${diagnostic.range.start.character + 1}: ${severity}: ${diagnostic.message}`);
     }
   }
 
   return lines.join('\n') || '(no diagnostics)';
 }
 
-async function openFile(args: Record<string, unknown>): Promise<string> {
-  const uri = resolveWorkspacePath(args.path);
+async function openFile(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): Promise<string> {
+  const uri = resolveWorkspacePath(args.path, folder);
   const document = await vscode.workspace.openTextDocument(uri);
   await vscode.window.showTextDocument(document, { preview: false });
-  return `Opened ${vscode.workspace.asRelativePath(uri)}.`;
+  return `Opened ${workspaceRelativePath(uri, folder)}.`;
 }
 
 export function toolResultsToMessages(toolCalls: AgentToolResult[]): ChatMessage[] {
@@ -355,43 +372,34 @@ export function toolResultsToMessages(toolCalls: AgentToolResult[]): ChatMessage
   }));
 }
 
-function workspaceFolder(): vscode.WorkspaceFolder {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) {
-    throw new Error('No workspace folder is open.');
-  }
-  return folder;
-}
-
-function resolveWorkspacePath(input: unknown): vscode.Uri {
+function resolveWorkspacePath(input: unknown, folder: vscode.WorkspaceFolder): vscode.Uri {
   if (typeof input !== 'string' || !input.trim()) {
     throw new Error('A workspace-relative path is required.');
   }
 
-  const folder = workspaceFolder();
-  const relative = input.replace(/^\/+/, '');
-  const uri = vscode.Uri.joinPath(folder.uri, relative);
-  const root = folder.uri.fsPath;
-  const resolved = uri.fsPath;
+  if (path.isAbsolute(input) || path.win32.isAbsolute(input) || /^[a-z][a-z0-9+.-]*:/i.test(input)) {
+    throw new Error('A workspace-relative path is required.');
+  }
+  const uri = vscode.Uri.joinPath(folder.uri, input);
 
-  if (path.relative(root, resolved).startsWith('..')) {
+  if (!isInWorkspace(uri, folder)) {
     throw new Error('Path escapes the workspace.');
   }
 
   return uri;
 }
 
-async function listWorkspaceFiles(args: Record<string, unknown>): Promise<string> {
+async function listWorkspaceFiles(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): Promise<string> {
   const pattern = typeof args.pattern === 'string' && args.pattern.trim() ? args.pattern : '**/*';
   const maxResults = boundedNumber(args.maxResults, 200, MAX_RESULT_COUNT);
-  const files = await vscode.workspace.findFiles(pattern, '**/{node_modules,.git,dist,out}/**', maxResults);
-  return files.map((file) => vscode.workspace.asRelativePath(file)).join('\n') || '(no files)';
+  const files = (await vscode.workspace.findFiles(new vscode.RelativePattern(folder, pattern), '**/{node_modules,.git,dist,out}/**', maxResults)).filter(file => isInWorkspace(file, folder));
+  return files.map((file) => workspaceRelativePath(file, folder)).join('\n') || '(no files)';
 }
 
-async function readFile(args: Record<string, unknown>): Promise<string> {
-  const uri = resolveWorkspacePath(args.path);
+async function readFile(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): Promise<string> {
+  const uri = resolveWorkspacePath(args.path, folder);
   const bytes = await vscode.workspace.fs.readFile(uri);
-  const unsupportedMessage = `Cannot read ${vscode.workspace.asRelativePath(uri)}: binary or unsupported file (expected UTF-8 text).`;
+  const unsupportedMessage = `Cannot read ${workspaceRelativePath(uri, folder)}: binary or unsupported file (expected UTF-8 text).`;
   if (bytes.includes(0)) {
     throw new Error(unsupportedMessage);
   }
@@ -404,14 +412,14 @@ async function readFile(args: Record<string, unknown>): Promise<string> {
   return truncate(text, boundedNumber(args.maxChars, 30000, MAX_TEXT_CHARS));
 }
 
-async function searchWorkspace(args: Record<string, unknown>): Promise<string> {
+async function searchWorkspace(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): Promise<string> {
   const query = String(args.query ?? '').trim();
   if (!query) {
     throw new Error('query is required.');
   }
 
   const maxResults = boundedNumber(args.maxResults, 80, MAX_RESULT_COUNT);
-  const files = await vscode.workspace.findFiles('**/*', '**/{node_modules,.git,dist,out}/**', 500);
+  const files = (await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'), '**/{node_modules,.git,dist,out}/**', 500)).filter(file => isInWorkspace(file, folder));
   const hits: string[] = [];
 
   for (const file of files) {
@@ -429,7 +437,7 @@ async function searchWorkspace(args: Record<string, unknown>): Promise<string> {
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length && hits.length < maxResults; index += 1) {
       if (lines[index].includes(query)) {
-        hits.push(`${vscode.workspace.asRelativePath(file)}:${index + 1}: ${lines[index].trim()}`);
+        hits.push(`${workspaceRelativePath(file, folder)}:${index + 1}: ${lines[index].trim()}`);
       }
     }
   }
@@ -438,7 +446,8 @@ async function searchWorkspace(args: Record<string, unknown>): Promise<string> {
 }
 
 async function writeFile(args: Record<string, unknown>, options: AgentToolOptions, createOnly = false): Promise<string> {
-  const uri = resolveWorkspacePath(args.path);
+  const folder = requireWorkspaceFolder(options.workspaceFolder);
+  const uri = resolveWorkspacePath(args.path, folder);
   if (typeof args.content !== 'string') throw new Error('content must be a string.');
   let exists = true;
   try { await vscode.workspace.fs.stat(uri); } catch (error) {
@@ -451,7 +460,8 @@ async function writeFile(args: Record<string, unknown>, options: AgentToolOption
 }
 
 async function replaceInFile(args: Record<string, unknown>, options: AgentToolOptions): Promise<string> {
-  const uri = resolveWorkspacePath(args.path);
+  const folder = requireWorkspaceFolder(options.workspaceFolder);
+  const uri = resolveWorkspacePath(args.path, folder);
   const oldText = String(args.oldText ?? '');
   const newText = String(args.newText ?? '');
 
@@ -470,13 +480,14 @@ async function replaceInFile(args: Record<string, unknown>, options: AgentToolOp
 }
 
 async function deleteFile(args: Record<string, unknown>, options: AgentToolOptions): Promise<string> {
-  const uri = resolveWorkspacePath(args.path);
+  const folder = requireWorkspaceFolder(options.workspaceFolder);
+  const uri = resolveWorkspacePath(args.path, folder);
   const stat = await vscode.workspace.fs.stat(uri);
   if (stat.type & vscode.FileType.Directory) throw new Error('delete_file only supports individual files, not directories.');
   const document = await vscode.workspace.openTextDocument(uri);
   if (document.isDirty) throw new Error('File has unsaved changes. Save or discard them before requesting deletion.');
   const version = document.version;
-  const label = vscode.workspace.asRelativePath(uri);
+  const label = workspaceRelativePath(uri, folder);
   const scheme = `deeplocal-delete-${Math.random().toString(36).slice(2)}`;
   const before = vscode.Uri.parse(`${scheme}:/before/${encodeURIComponent(label)}`);
   const after = vscode.Uri.parse(`${scheme}:/after/${encodeURIComponent(label)}`);
@@ -489,6 +500,7 @@ async function deleteFile(args: Record<string, unknown>, options: AgentToolOptio
     const preview = async () => { await vscode.commands.executeCommand('vscode.diff', before, after, `Delete ${label}`, { preview: true }); };
     const approved = await approveIfNeeded('delete_file', args, message, options, preview);
     options.signal?.throwIfAborted();
+    requireWorkspaceFolder(options.workspaceFolder);
     if (!approved) return 'User declined file deletion. Do not retry without new instructions.';
     if (document.version !== version || document.isDirty) throw new Error('File changed during review; request deletion again after reviewing it.');
     await vscode.workspace.fs.delete(uri, { recursive: false, useTrash: true });
@@ -499,7 +511,8 @@ async function deleteFile(args: Record<string, unknown>, options: AgentToolOptio
 }
 
 async function applyFileChange(uri: vscode.Uri, document: vscode.TextDocument | undefined, content: string, options: AgentToolOptions): Promise<string> {
-  const label = vscode.workspace.asRelativePath(uri);
+  const folder = requireWorkspaceFolder(options.workspaceFolder);
+  const label = workspaceRelativePath(uri, folder);
   if (document?.isDirty) throw new Error('File has unsaved changes. Save or discard them before requesting an agent edit.');
   const version = document?.version;
   const original = document?.getText() ?? '';
@@ -514,6 +527,7 @@ async function applyFileChange(uri: vscode.Uri, document: vscode.TextDocument | 
     const message = `${document ? 'Edit' : 'Create'} ${label} (${content.split('\n').length} lines)`;
     const approved = await approveIfNeeded(document ? 'write_file' : 'create_file', { path: label }, message, options, preview);
     options.signal?.throwIfAborted();
+    requireWorkspaceFolder(options.workspaceFolder);
     if (!approved) return 'User declined file change. Do not retry this action without new instructions.';
     if (document && (document.version !== version || document.isDirty)) throw new Error('File changed during review; read it again before editing.');
     const edit = new vscode.WorkspaceEdit();
@@ -523,6 +537,7 @@ async function applyFileChange(uri: vscode.Uri, document: vscode.TextDocument | 
       edit.insert(uri, new vscode.Position(0, 0), content);
     }
     options.signal?.throwIfAborted();
+    requireWorkspaceFolder(options.workspaceFolder);
     if (!await vscode.workspace.applyEdit(edit)) throw new Error('VS Code could not apply the file change.');
     const saved = await vscode.workspace.openTextDocument(uri);
     if (!await saved.save()) throw new Error('File change applied but could not be saved.');
@@ -547,7 +562,8 @@ async function runCommand(args: Record<string, unknown>, options: AgentToolOptio
     return 'User declined command execution.';
   }
 
-  const folder = workspaceFolder();
+  const folder = requireWorkspaceFolder(options.workspaceFolder);
+  if (folder.uri.scheme !== 'file') throw new Error('Commands require a local workspace folder.');
   const { stdout, stderr } = await execFileAsync(command, commandArgs, {
     cwd: folder.uri.fsPath,
     timeout: 120000,

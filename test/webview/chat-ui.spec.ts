@@ -309,3 +309,31 @@ test('clears submitted text, keeps a follow-up draft, and rejects deletion expli
   await expect(page.locator('#status')).toHaveText('Needs attention');
   await expect(page.locator('#send')).toBeEnabled();
 });
+
+test('workspace selector is keyboard accessible, safely labels the target and stays locked during work', async ({ page }, testInfo) => {
+  await dispatch(page, { type: 'workspace', label: 'Choose workspace folder', canSelect: true });
+  const selector = page.getByRole('button', { name: 'Choose workspace folder', exact: true });
+  await selector.focus();
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toEqual({ type: 'selectWorkspace' });
+  await dispatch(page, { type: 'workspace', label: 'api (/tmp/second/api)', path: 'file:///tmp/second/api', canSelect: true });
+  await expect(selector).toHaveText('Workspace: api (/tmp/second/api)');
+  await expect(selector).toHaveAttribute('title', 'file:///tmp/second/api');
+  await dispatch(page, { type: 'assistantStart', agent: true });
+  await expect(selector).toBeDisabled();
+  await dispatch(page, { type: 'toolStart', activity: { id: 'one', title: 'Read file', detail: 'same.txt', state: 'running' } });
+  await expect(selector).toContainText('api (/tmp/second/api)');
+  await expect(selector).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath('selected-workspace-running.png') });
+  await dispatch(page, { type: 'assistantDone', outcome: 'cancelled' });
+  await expect(selector).toBeEnabled();
+  await selector.focus();
+  await page.keyboard.press('Space');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toEqual({ type: 'selectWorkspace' });
+  await dispatch(page, { type: 'workspace', label: '<script>example</script> 日本語', path: 'file:///tmp/one', canSelect: false });
+  await expect(selector).toHaveText('Workspace: <script>example</script> 日本語');
+  await expect(selector.locator('script')).toHaveCount(0);
+  await expect(selector).toBeDisabled();
+  await dispatch(page, { type: 'workspace', label: 'No folder open', canSelect: false });
+  await expect(selector).toHaveText('Workspace: No folder open');
+});

@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const vscode = require('vscode');
+const path = require('node:path');
+const { buildSync } = require('esbuild');
 
 suite('deeplocal-chat-adapter Extension Host', () => {
   let server;
@@ -53,5 +55,17 @@ suite('deeplocal-chat-adapter Extension Host', () => {
     assert.ok(extension.packageJSON.contributes.viewsContainers.activitybar
       .some((container) => container.id === 'deeplocal-chat-adapter-sidebar'), 'container must use a stable contribution point');
     await vscode.commands.executeCommand('deeplocal-chat-adapter.open');
+  });
+
+  test('uses a single workspace folder automatically without selection', async () => {
+    buildSync({ entryPoints: [path.join(__dirname, '../../src/agent-tools.ts')], bundle: true,
+      platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/single-workspace-tools.cjs') });
+    const { invokeAgentTool } = require('../../out/single-workspace-tools.cjs');
+    assert.equal(vscode.workspace.workspaceFolders.length, 1);
+    const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, 'single.txt');
+    await vscode.workspace.fs.writeFile(uri, Buffer.from('automatic single folder'));
+    const result = await invokeAgentTool('single', 'read_file', '{"path":"single.txt"}');
+    assert.equal(result.status, 'success');
+    assert.equal(result.content, 'automatic single folder');
   });
 });

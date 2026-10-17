@@ -2,6 +2,7 @@ import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { Script } from 'node:vm';
 import { posix as path } from 'node:path';
 import { ChatPanel } from '../../src/chat-panel';
+import * as vscode from 'vscode';
 import { invokeAgentTool } from '../../src/agent-tools';
 import { ChatCompletionRequest, StreamEvent } from '../../src/protocol';
 import { toolActivity } from '../../src/tool-activity';
@@ -9,7 +10,9 @@ import { toolActivity } from '../../src/tool-activity';
 const env = vi.hoisted(() => ({
   files: new Map<string, string>(), dirty: false, version: 1,
   apply: vi.fn(), show: vi.fn(), dispose: vi.fn(), command: vi.fn(), trash: vi.fn(),
-  clipboard: vi.fn(),
+  clipboard: vi.fn(), picker: vi.fn(),
+  folders: [] as vscode.WorkspaceFolder[],
+  foldersChanged: (_event: vscode.WorkspaceFoldersChangeEvent) => {},
   config: { injectSystemPrompt: true, agentMaxTurns: 3, maxOutputTokens: 1000, backend: 'local', approvalMode: 'every' },
 }));
 
@@ -27,12 +30,13 @@ vi.mock('vscode', () => {
     FileType: { File: 1, Directory: 2 },
     Uri: { parse: uri, joinPath: (root: { fsPath: string }, relative: string) => uri(path.resolve(root.fsPath, relative)) },
     WorkspaceEdit, Position: class {}, Range: class {},
-    window: { showTextDocument: env.show, showWarningMessage: vi.fn(), activeTextEditor: {
+    window: { showQuickPick: env.picker, showTextDocument: env.show, showWarningMessage: vi.fn(), activeTextEditor: {
       document: { fileName: '/project/existing.ts', uri: uri('/project/existing.ts'), getText: () => 'important original' },
     } },
     commands: { executeCommand: env.command },
     workspace: {
-      workspaceFolders: [{ name: 'project', uri: uri('/project') }],
+      get workspaceFolders() { return env.folders; },
+      onDidChangeWorkspaceFolders: (callback: typeof env.foldersChanged) => { env.foldersChanged = callback; return { dispose: vi.fn() }; },
       asRelativePath: (target: { fsPath: string }) => path.relative('/project', target.fsPath),
       registerTextDocumentContentProvider: () => ({ dispose: env.dispose }),
       fs: { stat: async (target: { fsPath: string }) => {
@@ -61,6 +65,7 @@ vi.mock('vscode', () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  env.folders = [{ name: 'project', uri: { fsPath: '/project', scheme: 'file', toString: () => '/project' }, index: 0 } as vscode.WorkspaceFolder];
   env.files.clear();
   env.files.set('/project/existing.ts', 'important original');
   env.dirty = false;
@@ -183,14 +188,14 @@ function panelHarness(responses: StreamEvent[][]) {
       for (const event of responses.shift() ?? []) yield event;
     },
   };
-  const panel = new ChatPanel({ workspaceState: memento, globalState: memento } as never, client as never,
+  const panel = new ChatPanel({ subscriptions: [], workspaceState: memento, globalState: memento } as never, client as never,
     { error: vi.fn() } as never, { get: async () => '', set: async () => {}, clear: async () => {} });
   const webview = { html: '', options: {}, cspSource: 'test:',
     postMessage: (message: Record<string, unknown>) => { sent.push(message); },
     onDidReceiveMessage: (handler: typeof receive) => { receive = handler; },
   };
   panel.resolveWebviewView({ webview, onDidDispose: () => {} } as never);
-  return { sent, requests, state, webview, client, send: (message: unknown) => receive(message) };
+  return { panel, sent, requests, state, webview, client, send: (message: unknown) => receive(message) };
 }
 
 it('writes webview copy requests to the VS Code clipboard and reports the result', async () => {
@@ -335,4 +340,104 @@ it('reports step exhaustion instead of claiming completion', async () => {
   await vi.waitFor(() => expect(harness.sent.some((message) => message.type === 'assistantDone')).toBe(true));
   expect(harness.sent.some((message) => message.type === 'error' && String(message.message).includes('safety limit'))).toBe(true);
   expect(env.apply).not.toHaveBeenCalled();
+});
+
+function addSecondWorkspace() {
+  const second = { name: 'project', uri: { fsPath: '/second', scheme: 'file', toString: () => '/second' }, index: 1 } as vscode.WorkspaceFolder;
+  env.folders.push(second);
+  return second;
+}
+
+it('shows the automatic single root without asking and requires a deliberate choice for multiple roots', async () => {
+  const harness = panelHarness([]);
+  harness.send({ type: 'ready' });
+  await vi.waitFor(() => expect(harness.sent).toContainEqual({ type: 'workspace', label: 'project', path: '/project', canSelect: false }));
+  expect(env.picker).not.toHaveBeenCalled();
+  addSecondWorkspace();
+  harness.send({ type: 'send', text: 'Inspect', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'error' && String(message.message).includes('choose a workspace'))).toBe(true));
+  expect(harness.requests).toHaveLength(0);
+  env.picker.mockImplementationOnce(async items => items[1]);
+  harness.send({ type: 'selectWorkspace' });
+  await vi.waitFor(() => expect(harness.sent).toContainEqual({ type: 'workspace', label: 'project (/second)', path: '/second', canSelect: true }));
+  expect(env.picker.mock.calls[0][0].map((item: { description: string }) => item.description)).toEqual(['/project', '/second']);
+});
+
+it('cancelling the folder picker retains the previous choice; no folder blocks agent work', async () => {
+  const second = addSecondWorkspace();
+  env.picker.mockResolvedValueOnce({ folder: second }).mockResolvedValueOnce(undefined);
+  const harness = panelHarness([]);
+  harness.send({ type: 'selectWorkspace' });
+  await vi.waitFor(() => expect(harness.sent.at(-1)).toMatchObject({ type: 'workspace', path: '/second', canSelect: true }));
+  harness.send({ type: 'selectWorkspace' });
+  await vi.waitFor(() => expect(env.picker).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(harness.sent.at(-1)).toMatchObject({ type: 'workspace', path: '/second', canSelect: true }));
+  env.folders = [];
+  env.foldersChanged({ added: [], removed: [second] });
+  expect(harness.sent.at(-1)).toMatchObject({ type: 'workspace', label: 'No folder open' });
+  harness.send({ type: 'send', text: 'Inspect', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
+  expect(harness.requests).toHaveLength(0);
+});
+
+it('pins every turn and approval to the chosen root and ignores switches during a task', async () => {
+  const second = addSecondWorkspace();
+  env.picker.mockResolvedValueOnce({ folder: second });
+  const harness = panelHarness([[tool], [{ kind: 'text', value: 'Created in second.' }]]);
+  harness.send({ type: 'selectWorkspace' });
+  await vi.waitFor(() => expect(harness.sent.at(-1)).toMatchObject({ type: 'workspace', path: '/second', canSelect: true }));
+  harness.send({ type: 'send', text: 'Create', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'approval')).toBe(true));
+  harness.send({ type: 'selectWorkspace' });
+  expect(env.picker).toHaveBeenCalledTimes(1);
+  expect(harness.sent.filter(message => message.type === 'workspace').at(-1)).toMatchObject({ path: '/second', canSelect: false });
+  expect(harness.requests[0].messages[0].content).toContain('Active workspace folder for this task: project (/second)');
+  const approval = harness.sent.find(message => message.type === 'approval')!;
+  harness.send({ type: 'approval', approvalId: approval.approvalId, approved: true });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
+  expect(env.files.get('/second/snake.html')).toBe('<html>snake</html>');
+  expect(env.files.has('/project/snake.html')).toBe(false);
+  expect(harness.requests[1].messages[0].content).toContain('/second');
+});
+
+it('removing the task root during approval stops the task without writes or fallback', async () => {
+  const second = addSecondWorkspace();
+  env.picker.mockResolvedValueOnce({ folder: second });
+  const harness = panelHarness([[tool]]);
+  harness.send({ type: 'selectWorkspace' });
+  await vi.waitFor(() => expect(harness.sent.at(-1)).toMatchObject({ path: '/second', canSelect: true }));
+  harness.send({ type: 'send', text: 'Create', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'approval')).toBe(true));
+  env.folders = [env.folders[0]];
+  env.foldersChanged({ added: [], removed: [second] });
+  await vi.waitFor(() => expect(harness.sent).toContainEqual({ type: 'assistantDone', outcome: 'cancelled' }));
+  expect(env.apply).not.toHaveBeenCalled();
+  expect(harness.requests).toHaveLength(1);
+  expect(harness.sent.some(message => message.type === 'notice' && String(message.message).includes('removed'))).toBe(true);
+});
+
+it('does not start a competing task while the folder picker is pending', async () => {
+  const second = addSecondWorkspace();
+  let resolve!: (value: unknown) => void;
+  env.picker.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  const harness = panelHarness([]);
+  harness.send({ type: 'selectWorkspace' });
+  harness.send({ type: 'send', text: 'Create', model: 'test' });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
+  expect(harness.requests).toHaveLength(0);
+  resolve({ folder: second });
+  await vi.waitFor(() => expect(harness.sent.at(-1)).toMatchObject({ path: '/second', canSelect: true }));
+});
+
+it('deletes only from the pinned root even if the options change during approval', async () => {
+  const second = addSecondWorkspace();
+  env.files.set('/second/existing.ts', 'second contents');
+  const options = { workspaceFolder: second, approvalMode: 'every' as const, approve: async () => {
+    options.workspaceFolder = env.folders[0]; return true;
+  } };
+  const result = await invokeAgentTool('delete', 'delete_file', '{"path":"existing.ts"}', options);
+  expect(result.status).toBe('success');
+  expect(env.trash).toHaveBeenCalledWith('/second/existing.ts', { recursive: false, useTrash: true });
+  expect(env.files.get('/project/existing.ts')).toBe('important original');
+  expect(env.files.has('/second/existing.ts')).toBe(false);
 });

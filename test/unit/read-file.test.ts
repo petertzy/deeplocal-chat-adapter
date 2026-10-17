@@ -1,22 +1,26 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { posix as path } from 'node:path';
+import type * as vscode from 'vscode';
 import { invokeAgentTool, toolResultsToMessages } from '../../src/agent-tools';
 
-const env = vi.hoisted(() => ({ readFile: vi.fn() }));
+const env = vi.hoisted(() => ({ readFile: vi.fn(), folders: [] as vscode.WorkspaceFolder[] }));
 
 vi.mock('vscode', () => {
   const uri = (fsPath: string) => ({ fsPath });
   return {
     Uri: { joinPath: (root: { fsPath: string }, relative: string) => uri(path.resolve(root.fsPath, relative)) },
     workspace: {
-      workspaceFolders: [{ name: 'project', uri: uri('/project') }],
+      get workspaceFolders() { return env.folders; },
       asRelativePath: (target: { fsPath: string }) => path.relative('/project', target.fsPath),
       fs: { readFile: env.readFile },
     },
   };
 });
 
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  env.folders = [{ name: 'project', uri: { fsPath: '/project' }, index: 0 } as vscode.WorkspaceFolder];
+});
 
 function readFile(filePath = 'assets/example.bin', maxChars?: number) {
   return invokeAgentTool('read-1', 'read_file', JSON.stringify({ path: filePath, maxChars }));
@@ -88,4 +92,31 @@ it.each(['../outside.bin', 'assets/../../outside.bin', '', '   '])('rejects inva
 it('preserves file-system errors', async () => {
   env.readFile.mockRejectedValue(new Error('File not found'));
   expect(await readFile('missing.txt')).toMatchObject({ status: 'error', content: 'Tool error: File not found' });
+});
+
+
+it('keeps an awaited read pinned when the caller changes its selected folder', async () => {
+  const second = { name: 'second', uri: { fsPath: '/second' }, index: 1 } as vscode.WorkspaceFolder;
+  env.folders.push(second);
+  let finish!: (bytes: Uint8Array) => void;
+  env.readFile.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const options = { workspaceFolder: second };
+  const pending = invokeAgentTool('read', 'read_file', '{"path":"same.txt"}', options);
+  options.workspaceFolder = env.folders[0];
+  expect(env.readFile).toHaveBeenCalledWith({ fsPath: '/second/same.txt' });
+  finish(new TextEncoder().encode('second contents'));
+  expect(await pending).toMatchObject({ status: 'success', content: 'second contents' });
+});
+
+it('does not return an awaited read after its pinned folder is removed', async () => {
+  const selected = env.folders[0];
+  let finish!: (bytes: Uint8Array) => void;
+  env.readFile.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const pending = invokeAgentTool('read', 'read_file', '{"path":"same.txt"}', { workspaceFolder: selected });
+  env.folders = [];
+  finish(new TextEncoder().encode('must not reach the model'));
+  const result = await pending;
+  expect(result.status).toBe('error');
+  expect(result.content).toContain('removed');
+  expect(result.content).not.toContain('must not reach the model');
 });

@@ -13,6 +13,7 @@ vi.mock('vscode', () => {
   const uri = (fsPath: string) => ({ fsPath, scheme: 'file', toString: () => fsPath });
   const root = path.resolve('/project');
   return {
+    RelativePattern: class { constructor(public base: unknown, public pattern: string) {} },
     Uri: { joinPath: (base: { fsPath: string }, relative: string) => uri(path.resolve(base.fsPath, relative)) },
     workspace: {
       workspaceFolders: [{ name: 'project', uri: uri(root) }],
@@ -22,7 +23,7 @@ vi.mock('vscode', () => {
     },
     window: { activeTextEditor: {
       selection: { isEmpty: false },
-      document: { getText: () => env.selection },
+      document: { uri: uri(path.resolve('/project', 'file.ts')), getText: () => env.selection },
     } },
     languages: { getDiagnostics: () => env.diagnostics.length ? [[uri(path.resolve('/project', 'file.ts')), env.diagnostics]] : [] },
     DiagnosticSeverity: { 0: 'Error' },
