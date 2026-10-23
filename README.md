@@ -296,6 +296,35 @@ depend on the project's installed language/lint providers and configuration;
 closed files may not have diagnostics. Shell commands bypass the file-tool import
 guard. Use relevant project checks before considering a fix complete.
 
+To try these checks with a repeatable local demo, run:
+
+```bash
+npm run demo:edit-validation
+```
+
+The launcher builds the extension and opens an isolated VS Code window with a
+disposable TypeScript workspace and a local scripted provider. No API key or
+running model is needed. Wait for the ready message, select
+`issue80-scripted-demo` in the DeepLocal sidebar, keep **Build / Ask** and
+**Safe auto** selected, and send **Run demo**. The provider attempts duplicate
+imports, introduces runtime misuse of type-only imports, and then repairs them.
+Expand the tool cards and inspect `game.ts` and the Problems panel. The initial
+TS2322 error and the first two failed tool cards are intentional. Choose
+**Approve every action** before sending the prompt to also inspect approvals
+and diff previews.
+
+Actual tool feedback and pass/fail evidence are saved to `demo-results.json`
+beside the demo workspace under `.vscode-test/issue80-demo/`. Close the demo
+window and rerun the command for a fresh fixture. The first run may download the
+same VS Code 1.104.0 used by the integration tests. This demo does not install
+or publish the extension.
+
+For automatic verification without mouse input, run
+`npm run demo:edit-validation -- --verify`. This uses the real HTTP client,
+agent loop, file tools, and TypeScript diagnostics, with the webview transport
+captured for assertions; it closes the isolated window after checking all three
+scenarios. The interactive command uses the actual DeepLocal sidebar.
+
 Use **Stop** to cancel the active request or pending approval. Changes already
 applied before cancellation remain in place.
 

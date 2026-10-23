@@ -200,7 +200,8 @@
     "test:watch": "vitest",
     "test:webview": "playwright test",
     "check": "npm run check-types && npm run lint && npm test",
-    "test:integration": "npm run compile && vscode-test"
+    "test:integration": "npm run compile && vscode-test",
+    "demo:edit-validation": "node scripts/demo-edit-validation.cjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

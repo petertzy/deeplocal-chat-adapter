@@ -18,3 +18,4 @@ playwright.config.ts
 test-results/**
 playwright-report/**
 docs/**
+scripts/demo-edit-validation*.cjs
