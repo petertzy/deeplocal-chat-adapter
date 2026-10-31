@@ -5,6 +5,7 @@ import { boundedCommandText, redactCommandOutput } from './command-output';
 import { parseToolInput } from './tool-input';
 import type { DiagnosticObservation } from './edit-validation';
 import { createHash } from 'node:crypto';
+import type { SubagentBatchResult } from './subagent-types';
 
 export type CheckState = 'passed' | 'failed' | 'incomplete' | 'stale' | 'blocked' | 'skipped' | 'not_run';
 export interface RepairCheck {
@@ -41,6 +42,7 @@ interface Attempt {
   diagnostics?: DiagnosticObservation;
 }
 export interface CompletionReport {
+  research?: SubagentBatchResult[];
   verification: 'checks_passed' | 'failed' | 'unverified' | 'interrupted';
   scope: 'Declared commands only; task completeness is not established.';
   notRecorded: 'A requested build, lint or test absent from the recorded attempts is not_run. Undeclared attempts retain their actual outcomes below.';
@@ -97,16 +99,23 @@ export class TaskEvidence {
   private declarationOverflow = false;
   private generation = 0;
   private readonly ids = new Set<string>();
+  private readonly research: SubagentBatchResult[] = [];
 
-  reserve(calls: ToolCall[]): void {
+  reserve(calls: ToolCall[], agentId = ''): void {
     if (calls.length > 32 || this.ids.size + calls.length > 128) throw new Error('Task tool-call limit reached; verification is incomplete.');
+    const pending = new Set<string>();
     for (const call of calls) {
-      if (!call.id || this.ids.has(call.id)) throw new Error('Duplicate or missing task tool-call ID; verification is incomplete.');
-      this.ids.add(call.id);
+      const id = JSON.stringify([agentId, call.id]);
+      if (!call.id || this.ids.has(id) || pending.has(id)) throw new Error('Duplicate or missing task tool-call ID; verification is incomplete.');
+      pending.add(id);
     }
+    for (const id of pending) this.ids.add(id);
   }
 
   record(call: ToolCall, result: AgentToolResult, executed = true): void {
+    if (executed && call.function.name === 'delegate_research' && result.research && this.research.length < 16) {
+      this.research.push(structuredClone(result.research));
+    }
     if (executed && result.status === 'declined') {
       const key = deniedKey(call);
       if (key) this.denied.add(key);
@@ -238,6 +247,7 @@ export class TaskEvidence {
     const verification = interruption ? 'interrupted' : checks.some(check => check.state === 'failed') ? 'failed'
       : !this.declarationOverflow && checks.length && checks.every(check => check.state === 'passed') ? 'checks_passed' : 'unverified';
     return { verification, scope: 'Declared commands only; task completeness is not established.',
+      ...(this.research.length ? { research: structuredClone(this.research) } : {}),
       notRecorded: 'A requested build, lint or test absent from the recorded attempts is not_run. Undeclared attempts retain their actual outcomes below.', checks, attempts: facts,
       // Model prose is preserved for usefulness, but its provenance/trust label
       // must travel with it through display, copy, history and restoration.

@@ -1,3 +1,5 @@
+import { DEFAULT_SUBAGENT_LIMITS, SubagentLimits } from './subagent-types';
+
 export interface DeepLocalConfig {
   backend: 'local' | 'remote';
   apiMode?: 'chat-completions' | 'responses';
@@ -12,6 +14,7 @@ export interface DeepLocalConfig {
   injectSystemPrompt: boolean;
   agentMaxTurns: number;
   agentMaxRepairIterations?: number;
+  subagents?: SubagentLimits;
   approvalMode?: ApprovalMode;
   logLevel: 'debug' | 'info' | 'warning' | 'error' | 'off';
 }
@@ -41,8 +44,28 @@ export function getConfig(remoteApiKey = ''): DeepLocalConfig {
     // effectively unbounded from a user's perspective.
     agentMaxTurns: Math.max(1, Math.min(1000, config.get<number>('agentMaxTurns', 100))),
     agentMaxRepairIterations: normalizeRepairIterations(config.get<unknown>('agentMaxRepairIterations', 3)),
+    subagents: subagentLimits((key, fallback) => config.get<unknown>(`subagents.${key}`, fallback)),
     approvalMode: config.get<ApprovalMode>('approvalMode', 'safe'),
     logLevel: config.get<DeepLocalConfig['logLevel']>('logLevel', 'info'),
+  };
+}
+
+export function subagentLimits(read: (key: string, fallback: unknown) => unknown): SubagentLimits {
+  const integer = (key: keyof SubagentLimits, minimum: number, maximum: number): number => {
+    const value = read(key, DEFAULT_SUBAGENT_LIMITS[key]);
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(minimum, Math.min(maximum, Math.floor(value)))
+      : DEFAULT_SUBAGENT_LIMITS[key] as number;
+  };
+  return {
+    enabled: read('enabled', false) === true,
+    maxConcurrent: integer('maxConcurrent', 1, 4),
+    maxTasks: integer('maxTasks', 1, 16),
+    maxTurns: integer('maxTurns', 1, 20),
+    timeoutMs: integer('timeoutMs', 1000, 600000),
+    batchTimeoutMs: integer('batchTimeoutMs', 1000, 900000),
+    maxOutputTokens: integer('maxOutputTokens', 128, 32768),
+    totalOutputTokens: integer('totalOutputTokens', 128, 131072),
   };
 }
 

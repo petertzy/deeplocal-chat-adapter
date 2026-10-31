@@ -63,15 +63,30 @@
       "title": "deeplocal-chat-adapter",
       "properties": {
         "deeplocal.apiMode": {
-          "type": "string", "enum": ["chat-completions", "responses"], "default": "chat-completions",
+          "type": "string",
+          "enum": [
+            "chat-completions",
+            "responses"
+          ],
+          "default": "chat-completions",
           "description": "Local API protocol. Select responses only when the service supports the Responses API."
         },
         "deeplocal.remote.apiMode": {
-          "type": "string", "enum": ["chat-completions", "responses"], "default": "chat-completions",
+          "type": "string",
+          "enum": [
+            "chat-completions",
+            "responses"
+          ],
+          "default": "chat-completions",
           "description": "Remote API protocol. Responses enables provider reasoning summaries and requires a compatible endpoint/model."
         },
         "deeplocal.reasoningSummary": {
-          "type": "string", "enum": ["auto", "off"], "default": "auto",
+          "type": "string",
+          "enum": [
+            "auto",
+            "off"
+          ],
+          "default": "auto",
           "description": "Request reasoning summaries in Responses mode. Turn off for models without summary support."
         },
         "deeplocal.baseUrl": {
@@ -79,9 +94,30 @@
           "default": "http://127.0.0.1:14567/v1",
           "description": "DeepLocal OpenAI-compatible API base URL."
         },
-        "deeplocal.backend": { "type": "string", "enum": ["local", "remote"], "enumDescriptions": ["Use the local DeepLocal service.", "Use the configured remote OpenAI-compatible API. Remote calls may incur provider charges."], "default": "local", "scope": "application", "description": "Select which service the DeepLocal / OpenAI-compatible provider uses." },
-        "deeplocal.remote.baseUrl": { "type": "string", "default": "https://api.openai.com/v1", "description": "Remote OpenAI-compatible API base URL." },
-        "deeplocal.remote.model": { "type": "string", "default": "gpt-4.1-mini", "description": "Remote model ID. Used directly if model discovery is unavailable." },
+        "deeplocal.backend": {
+          "type": "string",
+          "enum": [
+            "local",
+            "remote"
+          ],
+          "enumDescriptions": [
+            "Use the local DeepLocal service.",
+            "Use the configured remote OpenAI-compatible API. Remote calls may incur provider charges."
+          ],
+          "default": "local",
+          "scope": "application",
+          "description": "Select which service the DeepLocal / OpenAI-compatible provider uses."
+        },
+        "deeplocal.remote.baseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "Remote OpenAI-compatible API base URL."
+        },
+        "deeplocal.remote.model": {
+          "type": "string",
+          "default": "gpt-4.1-mini",
+          "description": "Remote model ID. Used directly if model discovery is unavailable."
+        },
         "deeplocal.apiKey": {
           "type": "string",
           "default": "",
@@ -129,8 +165,70 @@
           "scope": "resource",
           "default": [],
           "uniqueItems": true,
-          "items": { "type": "string", "enum": ["lint", "typecheck", "build", "test"] },
+          "items": {
+            "type": "string",
+            "enum": [
+              "lint",
+              "typecheck",
+              "build",
+              "test"
+            ]
+          },
           "description": "Preferred verification categories for Agent tasks. Empty automatically selects available project checks; a non-empty list limits suggested checks to the selected categories."
+        },
+        "deeplocal.subagents.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow normal Agent tasks to delegate scoped read-only research to the selected model. Remote research requests may incur provider charges."
+        },
+        "deeplocal.subagents.maxConcurrent": {
+          "type": "integer",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Maximum research subagents running concurrently."
+        },
+        "deeplocal.subagents.maxTasks": {
+          "type": "integer",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Maximum research subagents across all batches in one Agent request."
+        },
+        "deeplocal.subagents.maxTurns": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum model turns per research subagent."
+        },
+        "deeplocal.subagents.timeoutMs": {
+          "type": "integer",
+          "default": 120000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "description": "Research subagent runtime limit in milliseconds, including approval waits."
+        },
+        "deeplocal.subagents.batchTimeoutMs": {
+          "type": "integer",
+          "default": 300000,
+          "minimum": 1000,
+          "maximum": 900000,
+          "description": "Research batch deadline in milliseconds, including queued tasks."
+        },
+        "deeplocal.subagents.maxOutputTokens": {
+          "type": "integer",
+          "default": 8192,
+          "minimum": 128,
+          "maximum": 32768,
+          "description": "Cumulative requested generation-token allowance per research subagent. Requests reserve their full output ceiling; this is not an exact billing total."
+        },
+        "deeplocal.subagents.totalOutputTokens": {
+          "type": "integer",
+          "default": 32768,
+          "minimum": 128,
+          "maximum": 131072,
+          "description": "Cumulative requested generation-token allowance across all research subagents in one Agent request. Input context is bounded separately."
         },
         "deeplocal.agentMaxRepairIterations": {
           "type": "integer",
@@ -141,7 +239,12 @@
         },
         "deeplocal.approvalMode": {
           "type": "string",
-          "enum": ["every", "safe", "full", "ask"],
+          "enum": [
+            "every",
+            "safe",
+            "full",
+            "ask"
+          ],
           "enumDescriptions": [
             "Ask before every agent tool call.",
             "Run safe operations automatically and ask before risky operations.",
@@ -231,5 +334,8 @@
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.2",
     "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "koffi": "^2.16.3"
   }
 }

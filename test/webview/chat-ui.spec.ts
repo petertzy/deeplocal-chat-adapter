@@ -14,6 +14,84 @@ const reviewReport = {
     evidence: 'const unsafe = true;', path: 'src/old.ts', side: 'base', startLine: 1, endLine: 1 }],
 };
 
+const researchResult = {
+  id: 'child-1', title: 'Inspect permissions', state: 'completed', testsRun: false,
+  findings: [{ text: 'The guard rejects writes.', evidence: [{ observationId: 'observation-1', tool: 'read_file', path: 'src/guard.ts', quote: 'return false;' }] }],
+  limitations: ['Only the assigned paths were read.'], durationMs: 250,
+};
+
+test('research cards keep unique child attribution across interleaved states and partial failure', async ({ page }, testInfo) => {
+  const activity = { id: 'child-1', parentRequestId: 'request-1', title: 'Inspect permissions', state: 'queued' };
+  await dispatch(page, { type: 'subagent', activity });
+  await dispatch(page, { type: 'subagent', activity: { ...activity, id: 'child-2', title: 'Inspect limits', state: 'running' } });
+  await expect(page.locator('.subagent .action-state')).toHaveText(['Queued', 'Working']);
+  await dispatch(page, { type: 'subagent', activity: { ...activity, state: 'running' } });
+  await dispatch(page, { type: 'subagent', activity: { ...activity, id: 'child-2', title: 'Inspect limits', state: 'failed', result: { ...researchResult, id: 'child-2', title: 'Inspect limits', state: 'failed', limitations: ['Backend failed after one observation.'] } } });
+  await dispatch(page, { type: 'subagent', activity: { ...activity, state: 'completed', result: researchResult } });
+  await expect(page.locator('.subagent')).toHaveCount(2);
+  await expect(page.locator('.subagent .action-state')).toHaveText(['Completed', 'Failed']);
+  const card = page.locator('.subagent').first();
+  await card.locator('summary').click();
+  await expect(card).toContainText('Research · child-1');
+  await expect(card).toContainText('Model findings');
+  await expect(card).toContainText('Observed evidence');
+  await expect(card.locator('pre')).toHaveText('return false;');
+  await expect(card).toContainText('Tests were not run by this subagent.');
+  for (const width of [260, 340]) {
+    await page.setViewportSize({ width, height: 980 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  await page.screenshot({ path: testInfo.outputPath('parallel-research-narrow.png') });
+  await card.getByRole('button', { name: 'Copy assistant message', exact: true }).click();
+  const copy = await page.evaluate(() => window.__messages.at(-1));
+  expect(copy?.type).toBe('copy');
+  expect(JSON.parse(String(copy?.text))).toMatchObject({ ...activity, state: 'completed', result: researchResult });
+  await expect(card.locator('.message-actions')).toHaveCount(1);
+});
+
+test('restored research preserves cancellation, limits and safe text without stale cards', async ({ page }) => {
+  const unsafe = '<img src=x onerror="window.compromised=true"> [execute](command:evil)';
+  for (const state of ['cancelled', 'limited']) {
+    const result = { ...researchResult, state, findings: [{ text: unsafe, evidence: [{ observationId: 'obs-unsafe', tool: 'read_file', path: unsafe, quote: unsafe }] }], limitations: [state === 'limited' ? 'Child deadline reached.' : 'Stopped by user.'] };
+    const activity = { id: 'child-1', parentRequestId: 'request-saved', title: unsafe, state, result };
+    await dispatch(page, { type: 'restore', items: [{ role: 'Tool', text: 'fallback must not render', subagent: activity }] });
+    const card = page.locator('.subagent');
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('.action-title')).toHaveText(unsafe);
+    await expect(card.locator('.action-state')).toHaveText(state === 'limited' ? 'Limit reached' : 'Cancelled');
+    await card.locator('summary').click();
+    await expect(card.locator('pre')).toHaveText(unsafe);
+    await expect(card).toContainText(result.limitations[0]);
+    await expect(card.locator('a, img, script')).toHaveCount(0);
+    expect(await page.evaluate(() => 'compromised' in window)).toBe(false);
+    await dispatch(page, { type: 'subagent', activity });
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('.message-actions')).toHaveCount(1);
+    await card.getByRole('button', { name: 'Copy assistant message', exact: true }).click();
+    const copied = await page.evaluate(() => window.__messages.at(-1));
+    expect(JSON.parse(String(copied?.text)).result).toEqual(result);
+  }
+  await dispatch(page, { type: 'restore', items: [] });
+  await expect(page.locator('.subagent')).toHaveCount(0);
+});
+
+test('completion research is separate from command verification and shares one copy control', async ({ page }) => {
+  const report = { verification: 'not established', scope: 'Current task', checks: [], attempts: [], notRecorded: 'No commands recorded.', research: [{ id: 'batch-1', state: 'partial', results: [researchResult, { ...researchResult, id: 'child-2', state: 'failed', limitations: ['Backend failed.'] }] }] };
+  const text = JSON.stringify(report);
+  await dispatch(page, { type: 'restore', items: [{ role: 'DeepLocal', text, completionReport: report }] });
+  const completion = page.locator('.completion-report');
+  await expect(completion).toContainText('Verification: not established');
+  await expect(completion).toContainText('No verification checks declared');
+  await completion.locator('.research-results > summary').click();
+  await expect(completion).toContainText('Batch batch-1 — partial');
+  await expect(completion.locator('.subagent')).toHaveCount(2);
+  await completion.locator('.subagent').first().locator('summary').click();
+  await expect(completion.locator('.subagent').first()).toContainText('Observed evidence');
+  await expect(page.getByRole('button', { name: 'Copy assistant message', exact: true })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Copy assistant message', exact: true }).click();
+  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'copy', text });
+});
+
 test('review workflow waits for host confirmation and keeps permissions separate', async ({ page }) => {
   await page.locator('#prompt').fill('Check the guard');
   await page.getByRole('combobox', { name: 'Workflow', exact: true }).selectOption('review');

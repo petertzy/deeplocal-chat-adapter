@@ -15,7 +15,7 @@ async function assertSameDirectory(actual, expected) {
 // Exercise the actual source against VS Code's real filesystem, edits and URIs.
 buildSync({ entryPoints: [path.join(__dirname, '../../src/agent-tools.ts')], bundle: true,
   platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/workspace-tools.cjs') });
-const { invokeAgentTool, toolResultsToMessages } = require('../../out/workspace-tools.cjs');
+const { invokeAgentTool, toolResultsToMessages, verifyResearchSources } = require('../../out/workspace-tools.cjs');
 
 suite('Agent workspace selection with real files', () => {
   let temporary, roots, folders, originalCount;
@@ -242,6 +242,118 @@ suite('Agent workspace selection with real files', () => {
     })).status, 'declined');
     assert.equal(await fs.readFile(path.join(roots[1].fsPath, 'same.txt'), 'utf8'), 'root-1');
   });
+
+  test('research stays scoped and read-only under full access and verifies observed bytes', async () => {
+    const researchPolicy = { tools: ['read_file', 'search_workspace', 'list_workspace_files'], paths: ['same.txt'] };
+    const options = { approvalMode: 'full', researchPolicy, workspaceFolder: folders[1] };
+    const read = await call('read_file', { path: 'same.txt' }, folders[1], options);
+    assert.equal(read.status, 'success');
+    assert.equal(read.content, 'root-1');
+    await verifyResearchSources(read.researchSources, options);
+    assert.equal((await call('read_file', { path: 'package.json' }, folders[1], options)).status, 'error');
+    for (const name of ['write_file', 'delete_file', 'run_command']) {
+      assert.equal((await call(name, { path: 'same.txt', content: 'forbidden', command: process.execPath, args: ['-e', 'process.exit(1)'] }, folders[1], options)).status, 'error');
+    }
+    assert.equal(await fs.readFile(path.join(roots[1].fsPath, 'same.txt'), 'utf8'), 'root-1');
+    const listing = await call('list_workspace_files', {}, folders[1], options);
+    assert.equal(listing.content, 'same.txt');
+    const search = await call('search_workspace', { query: 'root-' }, folders[1], options);
+    assert.match(search.content, /same.txt:1: root-1/);
+    assert.doesNotMatch(search.content, /root-0/);
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(roots[1], 'same.txt'));
+    const change = new vscode.WorkspaceEdit();
+    change.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), 'changed after research');
+    assert.equal(await vscode.workspace.applyEdit(change), true);
+    assert.equal(await document.save(), true);
+    await assert.rejects(verifyResearchSources(read.researchSources, options), /Research evidence changed/);
+    const controller = new AbortController();
+    controller.abort();
+    assert.equal((await call('search_workspace', { query: 'root-' }, folders[1], { ...options, signal: controller.signal })).status, 'error');
+  });
+
+  for (const name of ['read_file', 'search_workspace']) {
+    for (const replacement of ['hardlink', 'junction']) {
+      test(`research ${name} rejects an outside ${replacement} handle even after the validated path is restored`, async () => {
+        const prefix = `research-open-race-${name}-${replacement}`;
+        const insideDirectory = path.join(roots[1].fsPath, prefix);
+        const parkedDirectory = path.join(roots[1].fsPath, `${prefix}-parked`);
+        const outsideDirectory = path.join(roots[0].fsPath, prefix);
+        const target = path.join(insideDirectory, 'source.txt');
+        const parkedFile = path.join(insideDirectory, 'source-original.txt');
+        const outsideFile = path.join(outsideDirectory, 'source.txt');
+        const sentinel = `OUTSIDE_RESEARCH_SENTINEL_${name}_${replacement}`;
+        await fs.mkdir(insideDirectory);
+        await fs.mkdir(outsideDirectory);
+        await fs.writeFile(target, 'allowed research source');
+        await fs.writeFile(outsideFile, sentinel);
+        const originalOpen = fs.open;
+        let intercepted = 0, readCalls = 0, closeCalls = 0;
+        let parked = false, linked = false, openedHandle;
+        async function restoreTarget() {
+          if (linked) {
+            // Unlink the named junction itself; never recursively remove its target.
+            if (replacement === 'junction' && process.platform === 'win32') await fs.rmdir(insideDirectory);
+            else await fs.unlink(replacement === 'hardlink' ? target : insideDirectory);
+            linked = false;
+          }
+          if (parked) {
+            await fs.rename(replacement === 'hardlink' ? parkedFile : parkedDirectory,
+              replacement === 'hardlink' ? target : insideDirectory);
+            parked = false;
+          }
+        }
+        try {
+          fs.open = async function (file, ...args) {
+            if (path.relative(path.resolve(String(file)), target) !== '') return originalOpen.call(fs, file, ...args);
+            assert.equal(++intercepted, 1, 'intercept exactly the scoped source open');
+            // The production path and ancestor checks have already completed.
+            // Switch the object actually opened, then restore the approved path
+            // before handing the descriptor back: a path-only recheck would pass.
+            await fs.rename(replacement === 'hardlink' ? target : insideDirectory,
+              replacement === 'hardlink' ? parkedFile : parkedDirectory);
+            parked = true;
+            if (replacement === 'hardlink') await fs.link(outsideFile, target);
+            else await fs.symlink(outsideDirectory, insideDirectory, process.platform === 'win32' ? 'junction' : 'dir');
+            linked = true;
+            openedHandle = await originalOpen.call(fs, file, ...args);
+            const actual = await openedHandle.stat({ bigint: true });
+            const outside = await fs.stat(outsideFile, { bigint: true });
+            assert.equal(actual.dev, outside.dev, 'fixture must open the sibling workspace object');
+            assert.equal(actual.ino, outside.ino, 'fixture must open the sibling workspace object');
+            const readFile = openedHandle.readFile.bind(openedHandle);
+            const close = openedHandle.close.bind(openedHandle);
+            openedHandle.readFile = (...readArgs) => { readCalls++; return readFile(...readArgs); };
+            openedHandle.close = (...closeArgs) => { closeCalls++; return close(...closeArgs); };
+            await restoreTarget();
+            assert.equal(await fs.readFile(target, 'utf8'), 'allowed research source', 'approved path is restored before validation resumes');
+            return openedHandle;
+          };
+          const result = await call(name, name === 'read_file' ? { path: `${prefix}/source.txt` } : { query: 'OUTSIDE_RESEARCH_SENTINEL' }, folders[1], {
+            approvalMode: 'full', researchPolicy: { tools: [name], paths: [prefix] },
+          });
+          assert.equal(intercepted, 1, 'exercise the actual production fs.open path');
+          assert.equal(readCalls, 0, 'outside descriptor must be rejected before reading any bytes');
+          assert.equal(closeCalls, 1, 'rejected descriptor must be closed');
+          assert.doesNotMatch(result.content, /OUTSIDE_RESEARCH_SENTINEL/);
+          assert.deepEqual(result.researchSources || [], [], 'wrong descriptor must never produce a source fingerprint');
+          if (name === 'read_file') assert.equal(result.status, 'error', result.content);
+          else {
+            assert.equal(result.status, 'success', result.content);
+            assert.match(result.content, /coverage is incomplete/);
+          }
+        } finally {
+          fs.open = originalOpen;
+          if (openedHandle && !closeCalls) await openedHandle.close();
+          await restoreTarget();
+          // These exact fixture directories are the only recursive cleanup targets.
+          assert.equal(path.dirname(path.resolve(insideDirectory)), path.resolve(roots[1].fsPath));
+          assert.equal(path.dirname(path.resolve(outsideDirectory)), path.resolve(roots[0].fsPath));
+          await fs.rm(insideDirectory, { recursive: true, force: true });
+          await fs.rm(outsideDirectory, { recursive: true, force: true });
+        }
+      });
+    }
+  }
 
   test('a removed folder during approval blocks writes and future invocations', async () => {
     const result = await call('write_file', { path: 'same.txt', content: 'removed' }, folders[1], {

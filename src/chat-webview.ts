@@ -88,6 +88,11 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   .completion-report { overflow-wrap: anywhere; }
   .completion-report ul { padding-left: 20px; }
   .completion-report summary { cursor: pointer; }
+  .subagent { overflow-wrap: anywhere; }
+  .subagent-body { padding: 0 10px 10px; }
+  .subagent h3 { font-size: 12px; margin: 12px 0 5px; }
+  .subagent ul { padding-left: 18px; }
+  .subagent .action-title { overflow-wrap: anywhere; }
   .shell[data-busy="true"] .status-dot { background: var(--vscode-progressBar-background, #0078d4); animation: pulse 1.2s infinite alternate; }
   @keyframes pulse { to { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { .status-dot { animation: none !important; } }
@@ -183,6 +188,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   const saved = vscode.getState() || {};
   const drafts = new Map(Object.entries(saved.drafts || {}));
   const actions = new Map();
+  const subagents = new Map();
   const summaries = new Map();
   const copies = new Map();
   let copyRequestId = 0;
@@ -311,6 +317,20 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     body.append(title, scope, checks, missing);
     if (report.limitation) { const limitation = document.createElement('p'); limitation.textContent = report.limitation; body.append(limitation); }
     body.append(detail);
+    if (report.research?.length) {
+      const research = document.createElement('details'); research.className = 'research-results';
+      const heading = document.createElement('summary'); heading.textContent = 'Read-only research — not command verification'; research.append(heading);
+      for (const batch of report.research.slice(0, 16)) {
+        const label = document.createElement('p'); label.textContent = 'Batch ' + batch.id + ' — ' + batch.state; research.append(label);
+        for (const result of batch.results.slice(0, 16)) {
+          const child = document.createElement('details'); child.className = 'subagent';
+          const title = document.createElement('summary'); title.textContent = result.title + ' [' + result.id + '] — ' + researchState(result.state);
+          const content = document.createElement('div'); content.className = 'subagent-body'; appendResearchResult(content, result);
+          child.append(title, content); research.append(child);
+        }
+      }
+      body.append(research);
+    }
     const modelText = report.unverifiedModelText;
     if (modelText && (modelText.nextSteps || modelText.checkReasons.length)) {
       const notes = document.createElement('details'); notes.className = 'model-suggestions';
@@ -356,6 +376,53 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     const limits = document.createElement('ul');
     for (const limitation of report.limitations) { const item = document.createElement('li'); item.textContent = limitation; limits.append(item); }
     body.append(limitsHeading, tests, limits); addCopy(body, id); follow(tail);
+  }
+  function researchState(state) {
+    return { queued: 'Queued', running: 'Working', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', limited: 'Limit reached' }[state] || state;
+  }
+  function appendResearchResult(body, result) {
+    const add = (tag, text) => { const node = document.createElement(tag); node.textContent = text; body.append(node); return node; };
+    add('p', 'Read-only research. Tests were not run by this subagent.');
+    add('h3', 'Model findings');
+    if (!result.findings.length) add('p', 'No findings reported.');
+    for (const finding of result.findings.slice(0, 32)) {
+      add('p', finding.text);
+      add('h3', 'Observed evidence');
+      if (!finding.evidence.length) add('p', 'No observed evidence supplied for this finding.');
+      for (const evidence of finding.evidence.slice(0, 16)) {
+        add('p', evidence.observationId + ' · ' + evidence.tool + (evidence.path ? ' · ' + evidence.path : ''));
+        add('pre', evidence.quote);
+      }
+    }
+    add('h3', 'Limitations');
+    add('p', 'State: ' + researchState(result.state) + ' · Duration: ' + result.durationMs + ' ms');
+    if (!result.limitations.length) add('p', 'No additional limitations reported.');
+    for (const limitation of result.limitations.slice(0, 32)) add('p', limitation);
+  }
+  function addSubagent(activity) {
+    const tail = nearBottom(); welcome.hidden = true;
+    let entry = subagents.get(activity.id);
+    if (!entry) {
+      const item = document.createElement('details'); item.className = 'action subagent';
+      const summary = document.createElement('summary');
+      const heading = document.createElement('div'); heading.className = 'action-heading';
+      const title = document.createElement('div'); title.className = 'action-title'; title.textContent = activity.title;
+      const attribution = document.createElement('div'); attribution.className = 'action-path'; attribution.textContent = 'Research · ' + activity.id; attribution.title = activity.id;
+      const badge = document.createElement('span'); badge.className = 'action-state';
+      heading.append(title, attribution); summary.append(heading, badge);
+      const body = document.createElement('div'); body.className = 'subagent-body'; item.append(summary, body); messages.append(item);
+      entry = { item, body, title: activity.title }; subagents.set(activity.id, entry);
+    }
+    entry.item.dataset.state = activity.state;
+    entry.item.querySelector('.action-state').textContent = researchState(activity.state);
+    entry.body.replaceChildren(); entry.item.querySelector('.message-actions')?.remove();
+    if (activity.result) {
+      appendResearchResult(entry.body, activity.result);
+      addCopy(entry.body, undefined, JSON.stringify({ ...activity, title: entry.title, result: { ...activity.result, testsRun: false } }, null, 2));
+    } else {
+      const note = document.createElement('p'); note.textContent = activity.state === 'queued' ? 'Waiting to start read-only research.' : 'Read-only research in progress. Tests were not run by this subagent.'; entry.body.append(note);
+    }
+    follow(tail);
   }
   function addTool(text, activity) {
     const followTail = nearBottom(); welcome.hidden = true;
@@ -470,12 +537,13 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       copies.clear();
       if (scheduledRender) cancelAnimationFrame(scheduledRender); scheduledRender = undefined;
       currentReasoning = undefined; reasoningText = ''; currentAssistant = undefined; assistantText = '';
-      messages.replaceChildren(welcome); welcome.hidden = msg.items.length > 0; actions.clear(); summaries.clear();
+      messages.replaceChildren(welcome); welcome.hidden = msg.items.length > 0; actions.clear(); summaries.clear(); subagents.clear();
       for (const item of msg.items) {
         if (item.completionReport) {
           const body = addMessage('Agent', ''); renderCompletion(body, item.completionReport, item.text); addCopy(body, undefined, item.text);
         }
         else if (item.reviewReport) addReview(item.id, item.reviewReport);
+        else if (item.subagent) addSubagent(item.subagent);
         else if (item.role === 'Tool') addTool(item.text, item.activity);
         else if (item.role === 'Summary') addSummary(item.id || 'restored-' + summaries.size, item.text, false);
         else if (item.role === 'Reasoning') { currentReasoning = undefined; addReasoning(item.text); currentReasoning = undefined; }
@@ -486,6 +554,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       }
     }
     if (msg.type === 'status') status.textContent = msg.message;
+    if (msg.type === 'subagent') addSubagent(msg.activity);
     if (msg.type === 'toolStart' || msg.type === 'toolResult') {
       if (msg.type === 'toolStart') finishSummaries();
       if (msg.type === 'toolStart' && reasoningText) {

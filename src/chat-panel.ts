@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getAgentTools, invokeAgentTool, toolResultsToMessages } from './agent-tools';
+import { AgentToolResult, getAgentTools, invokeAgentTool, toolResultsToMessages, verifyResearchSources } from './agent-tools';
 import { getConfig } from './config';
 import { DeepLocalClient } from './deeplocal-client';
 import { Logger } from './logger';
@@ -13,6 +13,9 @@ import { formatReviewReport } from './review-report';
 import { ReviewRequest, ReviewReport } from './review-types';
 import { completionTool, CompletionReport, formatCompletion, TaskEvidence } from './task-evidence';
 import { AgentRepair } from './agent-repair';
+import { delegationTool, SubagentManager } from './subagent-manager';
+import { ResearchLimitError } from './subagent-runner';
+import { DEFAULT_SUBAGENT_LIMITS, SubagentActivity, SubagentTask } from './subagent-types';
 
 interface WebviewMessage {
   type: 'selectWorkspace' | 'ready' | 'send' | 'stop' | 'approval' | 'preview' | 'refreshModels' | 'newSession' | 'switchSession' | 'deleteSession' | 'setBackend' | 'setRemoteApiKey' | 'clearRemoteApiKey' | 'setApiMode' | 'setSummary' | 'setApprovalMode' | 'copy' | 'setWorkflow' | 'openReviewReference' | 'copyReview';
@@ -39,6 +42,7 @@ interface PersistedChatItem {
   activity?: ToolActivity;
   reviewReport?: ReviewReport;
   completionReport?: CompletionReport;
+  subagent?: SubagentActivity;
 }
 
 interface ChatSession {
@@ -66,6 +70,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   private activeRequestId: string | undefined;
   private taskController: AbortController | undefined;
   private pendingApproval: { id: string; resolve: (approved: boolean) => void; preview?: () => Promise<void> } | undefined;
+  private readonly approvalQueue: Array<{ start: () => void; cancel: () => void }> = [];
+  private subagents: SubagentManager | undefined;
   private persistTimer: ReturnType<typeof setTimeout> | undefined;
   private view: vscode.WebviewView | undefined;
   private readonly reviewDocuments = new Map<string, string>();
@@ -96,7 +102,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       provideTextDocumentContent: uri => this.reviewDocuments.get(uri.toString()) ?? '',
     }));
     this.context.subscriptions.push({ dispose: () => this.reviewDocuments.clear() });
-    this.sessions = this.loadSessions().map(repairTranscript);
+    this.sessions = this.loadSessions().map(interruptResearch).map(repairTranscript);
     this.activeSessionId = this.context.workspaceState.get<string>(this.scopedActiveSessionKey, this.sessions[0].id);
     if (!this.sessions.some((session) => session.id === this.activeSessionId)) {
       this.activeSessionId = this.sessions[0].id;
@@ -576,6 +582,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       }
       await this.persist();
     } finally {
+      this.subagents?.stop();
+      this.subagents = undefined;
       this.activeRequestId = undefined;
       this.taskController = undefined;
       this.taskWorkspace = undefined;
@@ -624,6 +632,60 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     evidence: TaskEvidence,
   ): Promise<string> {
     const workingMessages = [...messages];
+    const config = getConfig();
+    const limits = { ...DEFAULT_SUBAGENT_LIMITS, ...config.subagents };
+    const childItems = new Map<string, PersistedChatItem>();
+    const childSources = new Map<SubagentTask, Map<string, string>>();
+    const subagents = limits.enabled ? new SubagentManager({
+      requestId, model, signal, limits,
+      maxOutputTokens: Math.min(config.maxOutputTokens, this.client.modelInformation(model).maxOutputTokens ?? config.maxOutputTokens),
+      stream: (id, request) => {
+        const current = getConfig();
+        if (current.backend !== config.backend || current.baseUrl !== config.baseUrl || current.apiMode !== config.apiMode) {
+          throw new Error('Research backend configuration changed; start a new task.');
+        }
+        return this.client.streamChat(id, request);
+      },
+      cancel: id => this.client.cancel(id),
+      reserve: (calls, agentId) => evidence.reserve(calls, agentId),
+      invoke: async (task, call, childSignal) => {
+        childSignal.throwIfAborted();
+        requireWorkspaceFolder(folder);
+        const result = await invokeAgentTool(call.id, call.function.name, call.function.arguments, {
+          signal: childSignal, workspaceFolder: folder,
+          researchPolicy: { tools: task.tools, paths: task.paths },
+          approvalMode: getConfig().approvalMode ?? 'safe',
+          approve: (message, preview) => this.requestApproval(`Research: ${task.title}\n${message}`, childSignal, preview),
+        });
+        const sources = childSources.get(task) ?? new Map<string, string>();
+        for (const source of result.researchSources ?? []) {
+          if (sources.has(source.path) && sources.get(source.path) !== source.digest) throw new Error('Research evidence changed during investigation.');
+          sources.set(source.path, source.digest);
+        }
+        if (sources.size > 500) throw new ResearchLimitError('Research source observation limit reached.');
+        childSources.set(task, sources);
+        return result;
+      },
+      verify: (task, childSignal) => verifyResearchSources(
+        [...(childSources.get(task) ?? [])].map(([path, digest]) => ({ path, digest })),
+        { signal: childSignal, workspaceFolder: folder, researchPolicy: { tools: task.tools, paths: task.paths } }),
+      onActivity: activity => {
+        if (this.activeRequestId !== requestId) return;
+        let item = childItems.get(activity.id);
+        if (!item) {
+          item = { role: 'Tool', id: activity.id, text: '', subagent: activity };
+          childItems.set(activity.id, item);
+          session.transcript.push(item);
+        }
+        item.subagent = structuredClone(activity);
+        item.text = activity.result ? JSON.stringify(activity.result, null, 2) : '';
+        session.updatedAt = Date.now();
+        this.post({ type: 'subagent', activity });
+        this.schedulePersist();
+      },
+    }) : undefined;
+    this.subagents = subagents;
+    if (subagents) workingMessages.push({ role: 'system', content: 'For independent research, use delegate_research with explicit objectives, minimal context, allowed workspace-relative files or directory prefixes, and only the needed research tools. Children cannot edit, execute commands, or delegate. Their attributed findings are model conclusions supported by observed evidence, never proof that builds or tests ran. Wait for results and inspect limitations before acting. Do not delegate dependent work or copy conversation history into child context.' });
     const repairLimit = getConfig().agentMaxRepairIterations ?? 3;
     const repair = new AgentRepair(repairLimit);
     let completionRaw: string | undefined;
@@ -653,7 +715,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         messages: workingMessages,
         stream: true,
         max_tokens: getConfig().maxOutputTokens,
-        tools: [...getAgentTools(), completionTool()],
+        tools: [...getAgentTools(), ...(subagents ? [delegationTool()] : []), completionTool()],
         tool_choice: 'auto',
       })) {
         if (event.kind === 'text') {
@@ -736,9 +798,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         const mutating = ['create_file', 'write_file', 'replace_in_file', 'delete_file'].includes(call.function.name);
         const retryBlock = repair.stopped ?? evidence.commandRetryBlock(call) ?? (mutating ? repair.beforeMutation() : undefined);
         if (retryBlock) repair.stop(retryBlock);
-        const result = retryBlock
+        const result: AgentToolResult = retryBlock
           ? { callId: call.id, name: call.function.name, content: `${retryBlock} Tool was not executed.`, status: 'error' as const }
-          : await invokeAgentTool(call.id, call.function.name, call.function.arguments, {
+          : call.function.name === 'delegate_research'
+            ? await this.delegateResearch(subagents, call)
+            : await invokeAgentTool(call.id, call.function.name, call.function.arguments, {
           signal,
           workspaceFolder: folder,
           approvalMode: getConfig().approvalMode ?? 'safe',
@@ -772,24 +836,57 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
   private stopTask(): void {
     this.taskController?.abort();
+    this.subagents?.stop();
     if (this.activeRequestId) this.client.cancel(this.activeRequestId);
+    for (const entry of this.approvalQueue.splice(0)) entry.cancel();
     this.pendingApproval?.resolve(false);
+  }
+
+  private async delegateResearch(manager: SubagentManager | undefined, call: ToolCall): Promise<AgentToolResult> {
+    if (!manager) return { callId: call.id, name: call.function.name, status: 'error', content: 'Parallel research is disabled for this task.' };
+    try {
+      const research = await manager.run(call.function.arguments);
+      return { callId: call.id, name: call.function.name, research,
+        status: research.state === 'completed' ? 'success' : 'error', content: JSON.stringify(research) };
+    } catch (error) {
+      return { callId: call.id, name: call.function.name, status: 'error', content: `Research was not completed: ${messageOf(error)}` };
+    }
+  }
+
+  private nextApproval(): void {
+    if (!this.pendingApproval && !this.taskController?.signal.aborted) this.approvalQueue.shift()?.start();
   }
 
   private requestApproval(message: string, signal: AbortSignal, preview?: () => Promise<void>): Promise<boolean> {
     signal.throwIfAborted();
     return new Promise((resolve) => {
       const id = createId();
+      let shown = false;
+      let settled = false;
       const finish = (approved: boolean) => {
+        if (settled) return;
+        settled = true;
         signal.removeEventListener('abort', onAbort);
-        this.pendingApproval = undefined;
-        this.post({ type: 'approvalDone', approvalId: id, approved });
+        const index = this.approvalQueue.indexOf(entry);
+        if (index >= 0) this.approvalQueue.splice(index, 1);
+        if (this.pendingApproval?.id === id) this.pendingApproval = undefined;
+        if (shown) this.post({ type: 'approvalDone', approvalId: id, approved });
         resolve(approved);
+        this.nextApproval();
       };
       const onAbort = () => finish(false);
-      this.pendingApproval = { id, resolve: finish, preview };
+      const entry = {
+        cancel: () => finish(false),
+        start: () => {
+          if (signal.aborted) { finish(false); return; }
+          shown = true;
+          this.pendingApproval = { id, resolve: finish, preview };
+          this.post({ type: 'approval', approvalId: id, message, hasPreview: Boolean(preview) });
+        },
+      };
       signal.addEventListener('abort', onAbort, { once: true });
-      this.post({ type: 'approval', approvalId: id, message, hasPreview: Boolean(preview) });
+      this.approvalQueue.push(entry);
+      this.nextApproval();
     });
   }
 
@@ -950,6 +1047,18 @@ function createSession(): ChatSession {
     history: [],
     transcript: [],
   };
+}
+
+/** Saved workers have no running process after an Extension Host restart. */
+function interruptResearch(session: ChatSession): ChatSession {
+  for (const item of session.transcript) {
+    if (!item.subagent || !['queued', 'running'].includes(item.subagent.state)) continue;
+    const result = { id: item.subagent.id, title: item.subagent.title, state: 'cancelled' as const,
+      findings: [], limitations: ['Research interrupted by restart; it was not resumed.'], durationMs: 0, testsRun: false as const };
+    item.subagent = { ...item.subagent, state: 'cancelled', result };
+    item.text = JSON.stringify(result, null, 2);
+  }
+  return session;
 }
 
 function createId(): string {

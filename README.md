@@ -70,6 +70,48 @@ VSIX installations from GitHub Releases generally require manually downloading a
 The remote backend is optional. It works with an OpenAI-compatible service and
 may incur charges from that provider.
 
+## Parallel read-only research
+
+Enable `deeplocal.subagents.enabled` to let the agent delegate bounded research
+tasks. Children use the selected model and backend; remote requests may incur
+charges. Each child receives bounded context and may only use `read_file`,
+`search_workspace`, `list_workspace_files`, and `get_diagnostics` within its
+assigned paths. Children cannot run commands, edit files, or delegate further.
+Research requires a local workspace and rejects symbolic links and junctions.
+On supported POSIX platforms, scoped reads use descriptor-relative traversal so
+concurrent path substitutions cannot redirect a child outside its assigned
+workspace paths. Platforms without this primitive fail closed for scoped reads.
+
+The parent waits for the research batch before continuing. Named expandable
+cards show queued, working, and terminal states, model findings, observed
+evidence, and limitations. Successful sibling findings remain visible when a
+child fails, reaches a deadline or allowance, or is cancelled. **Stop** cancels active
+children, queued work, and pending approvals. Saved sessions retain the research
+cards and their attribution. Copying a child result preserves its identity,
+evidence, limitations, and `testsRun: false`.
+
+Discovery is bounded and reports incomplete candidate coverage. File evidence
+is checked again before accepting a result; findings describe observed content
+and can become stale after later edits. Child deadlines include approval waits;
+batch deadlines also include queue time. Restarted sessions mark unfinished
+children as interrupted instead of resuming them.
+
+Research findings do not establish passed command verification. Tests are not
+run by children; the parent's existing command verification behavior still
+applies. Token allowances reserve API generation ceilings across requests;
+they are bounds, not exact billed token counts.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `deeplocal.subagents.enabled` | `false` | Explicit opt-in to parallel read-only research subagents. |
+| `deeplocal.subagents.maxConcurrent` | `2` | Concurrent research children, up to 4. |
+| `deeplocal.subagents.maxTasks` | `6` | Maximum children across all batches in one primary Agent request. |
+| `deeplocal.subagents.maxTurns` | `8` | Maximum model turns per child. |
+| `deeplocal.subagents.timeoutMs` | `120000` | Per-child deadline in milliseconds. |
+| `deeplocal.subagents.batchTimeoutMs` | `300000` | Entire research batch deadline in milliseconds. |
+| `deeplocal.subagents.maxOutputTokens` | `8192` | Cumulative generation allowance per child. |
+| `deeplocal.subagents.totalOutputTokens` | `32768` | Cumulative generation allowance across all children in one primary Agent request. |
+
 ## Commands
 
 - **deeplocal-chat-adapter: Open** — Reveal the sidebar.
