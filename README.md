@@ -78,6 +78,9 @@ charges. Each child receives bounded context and may only use `read_file`,
 `search_workspace`, `list_workspace_files`, and `get_diagnostics` within its
 assigned paths. Children cannot run commands, edit files, or delegate further.
 Research requires a local workspace and rejects symbolic links and junctions.
+On supported POSIX platforms, scoped reads use descriptor-relative traversal so
+concurrent path substitutions cannot redirect a child outside its assigned
+workspace paths. Platforms without this primitive fail closed for scoped reads.
 
 The parent waits for the research batch before continuing. Named expandable
 cards show queued, working, and terminal states, model findings, observed

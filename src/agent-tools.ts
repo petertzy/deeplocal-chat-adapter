@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { constants as fsConstants, promises as fs, type BigIntStats } from 'fs';
+import { fstat, readFile as readDescriptor } from 'node:fs';
+import * as koffi from 'koffi';
 import { createHash } from 'crypto';
 import type { ResearchPolicy, SubagentBatchResult } from './subagent-types';
 import { ChatMessage, ChatTool } from './protocol';
@@ -334,6 +336,65 @@ interface ResearchPathSnapshot {
   entries: Array<{ path: string; stat: BigIntStats }>;
 }
 
+const descriptorRead = (fd: number): Promise<Buffer> => new Promise((resolve, reject) => {
+  readDescriptor(fd, (error, bytes) => error ? reject(error) : resolve(bytes));
+});
+const descriptorStat = (fd: number): Promise<BigIntStats> => new Promise((resolve, reject) => {
+  fstat(fd, { bigint: true }, (error, stat) => error ? reject(error) : resolve(stat));
+});
+
+/**
+ * POSIX lacks a race-free path API in Node. Resolve each segment from an
+ * already-open directory descriptor so a rename, link, or junction cannot
+ * redirect a later segment lookup outside the trusted workspace directory.
+ */
+function posixDescriptorApi(): { openat: (parent: number, name: string, flags: number, mode: number) => number; close: (fd: number) => number } {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') {
+    throw new Error('Scoped research is unavailable on this platform because safe descriptor-relative reads are not supported.');
+  }
+  const library = koffi.load(process.platform === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6');
+  return {
+    openat: library.func('int openat(int, const char *, int, int)') as (parent: number, name: string, flags: number, mode: number) => number,
+    close: library.func('int close(int)') as (fd: number) => number,
+  };
+}
+
+async function readPinnedResearchBytes(snapshot: ResearchPathSnapshot, options: AgentToolOptions): Promise<Buffer> {
+  const api = posixDescriptorApi();
+  const directoryFlags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  const fileFlags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK;
+  let current = api.openat(-100, snapshot.root, directoryFlags, 0); // AT_FDCWD
+  if (current < 0) throw new Error('Research workspace could not be opened safely.');
+  try {
+    if (!sameResearchIdentity(snapshot.entries.find(entry => entry.path === snapshot.root)!.stat, await descriptorStat(current))) {
+      throw new Error('Research workspace changed before a safe read could begin.');
+    }
+    const relative = path.relative(snapshot.root, snapshot.target);
+    const parts = relative.split(path.sep).filter(Boolean);
+    let resolved = snapshot.root;
+    for (let index = 0; index < parts.length; index++) {
+      options.signal?.throwIfAborted();
+      const next = api.openat(current, parts[index], index === parts.length - 1 ? fileFlags : directoryFlags, 0);
+      if (next < 0) throw new Error('Research path changed during safe descriptor traversal; no file content was returned.');
+      api.close(current);
+      current = next;
+      resolved = path.join(resolved, parts[index]);
+      const expected = snapshot.entries.find(entry => entry.path === resolved);
+      if (!expected || !sameResearchIdentity(expected.stat, await descriptorStat(current))) {
+        throw new Error('Research path changed during safe descriptor traversal; no file content was returned.');
+      }
+    }
+    const opened = await descriptorStat(current);
+    if (!opened.isFile()) throw new Error('Research source is not a regular file.');
+    const bytes = await descriptorRead(current);
+    options.signal?.throwIfAborted();
+    if (!sameResearchFile(opened, await descriptorStat(current))) throw new Error('Research file changed while reading; no file content was returned.');
+    return bytes;
+  } finally {
+    if (current >= 0) api.close(current);
+  }
+}
+
 class ResearchSnapshotChanged extends Error {}
 
 function sameResearchIdentity(before: BigIntStats, after: BigIntStats): boolean {
@@ -437,21 +498,7 @@ async function readResearchBytes(uri: vscode.Uri, folder: vscode.WorkspaceFolder
   const expected = snapshot.entries[snapshot.entries.length - 1].stat;
   if (!expected.isFile()) throw new Error('Research source is not a regular file.');
   options.signal?.throwIfAborted();
-  // These flags are unavailable on Windows; descriptor identity remains mandatory there.
-  const handle = await fs.open(snapshot.target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
-  try {
-    options.signal?.throwIfAborted();
-    const opened = await handle.stat({ bigint: true });
-    if (!sameResearchFile(expected, opened)) throw new Error('Research file changed before reading; no file content was returned.');
-    await verifyResearchPath(snapshot, folder, options);
-    const bytes = await handle.readFile({ signal: options.signal });
-    options.signal?.throwIfAborted();
-    if (!sameResearchFile(opened, await handle.stat({ bigint: true }))) throw new Error('Research file changed while reading; no file content was returned.');
-    await verifyResearchPath(snapshot, folder, options);
-    return bytes;
-  } finally {
-    await handle.close();
-  }
+  return readPinnedResearchBytes(snapshot, options);
 }
 
 async function researchFiles(args: Record<string, unknown>, folder: vscode.WorkspaceFolder, options: AgentToolOptions, limit: number): Promise<{ files: vscode.Uri[]; limited: boolean }> {
