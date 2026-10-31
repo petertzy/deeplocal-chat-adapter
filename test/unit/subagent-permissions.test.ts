@@ -55,7 +55,10 @@ beforeEach(async () => {
   vi.resetAllMocks();
   vi.spyOn(fs, 'open').mockImplementation(observedOpen);
   env.handleRead.mockImplementation((_target: string, read: () => Promise<Buffer>) => read());
-  root = await fs.mkdtemp(path.join(os.tmpdir(), 'deeplocal-research-'));
+  // macOS commonly exposes its temporary directory through /var while Node's
+  // filesystem APIs return /private/var. Keep fixtures canonical so the
+  // substitution hooks exercise the exact path opened by the implementation.
+  root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'deeplocal-research-')));
   await fs.mkdir(path.join(root, 'src'));
   await fs.mkdir(path.join(root, 'src-other'));
   await fs.writeFile(path.join(root, 'src/a.txt'), 'needle allowed');
