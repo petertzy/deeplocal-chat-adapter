@@ -3,6 +3,10 @@
 out/**
 src/**
 node_modules/**
+!node_modules/koffi/package.json
+!node_modules/koffi/index.js
+!node_modules/koffi/LICENSE.txt
+!node_modules/koffi/build/koffi/**/*.node
 .env
 .gitignore
 .vscodeignore
@@ -18,3 +22,4 @@ playwright.config.ts
 test-results/**
 playwright-report/**
 docs/**
+scripts/**
