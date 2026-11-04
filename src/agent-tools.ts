@@ -352,11 +352,15 @@ function posixDescriptorApi(): { openat: (parent: number, name: string, flags: n
   if (process.platform !== 'darwin' && process.platform !== 'linux') {
     throw new Error('Scoped research is unavailable on this platform because safe descriptor-relative reads are not supported.');
   }
-  const library = koffi.load(process.platform === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6');
-  return {
-    openat: library.func('int openat(int, const char *, int, int)') as (parent: number, name: string, flags: number, mode: number) => number,
-    close: library.func('int close(int)') as (fd: number) => number,
-  };
+  try {
+    const library = koffi.load(process.platform === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6');
+    return {
+      openat: library.func('int openat(int, const char *, int, int)') as (parent: number, name: string, flags: number, mode: number) => number,
+      close: library.func('int close(int)') as (fd: number) => number,
+    };
+  } catch {
+    throw new Error('Scoped research is unavailable because the native descriptor-relative filesystem API could not be loaded. No file content was read.');
+  }
 }
 
 async function readPinnedResearchBytes(snapshot: ResearchPathSnapshot, options: AgentToolOptions): Promise<Buffer> {

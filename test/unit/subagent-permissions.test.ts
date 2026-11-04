@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { promises as fs, type BigIntStats } from 'node:fs';
 import * as os from 'node:os';
+import * as koffi from 'koffi';
 import type * as vscode from 'vscode';
 import { getAgentTools, invokeAgentTool, toolResultsToMessages, verifyResearchSources, type AgentToolOptions } from '../../src/agent-tools';
 import { RESEARCH_TOOLS, DEFAULT_SUBAGENT_LIMITS, type ResearchPolicy, type SubagentManagerOptions } from '../../src/subagent-types';
@@ -13,6 +14,11 @@ const env = vi.hoisted(() => ({
   diagnostics: [] as [vscode.Uri, vscode.Diagnostic[]][],
   read: vi.fn(), handleRead: vi.fn(), close: vi.fn(), find: vi.fn(), approve: vi.fn(), effect: vi.fn(), cancel: vi.fn(),
 }));
+
+vi.mock('koffi', async importOriginal => {
+  const actual = await importOriginal<typeof import('koffi')>();
+  return { ...actual, load: vi.fn(actual.load) };
+});
 
 vi.mock('vscode', () => {
   const uri = (fsPath: string) => ({ fsPath, scheme: 'file', authority: '', toString: () => fsPath });
@@ -340,6 +346,23 @@ it('reads through the descriptor-relative path rather than the mocked path reade
   expect(env.handleRead).not.toHaveBeenCalled();
 });
 
+it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux').each(['load', 'bind'] as const)(
+  'fails closed with a descriptive error when native descriptor APIs cannot %s', async failure => {
+    const fail = () => { throw new Error('synthetic native API failure'); };
+    if (failure === 'load') vi.mocked(koffi.load).mockImplementationOnce(fail);
+    else vi.mocked(koffi.load).mockReturnValueOnce({ func: fail } as unknown as ReturnType<typeof koffi.load>);
+    const result = await invoke('read_file', { path: 'src/a.txt' });
+    expect(result).toMatchObject({
+      status: 'error', content: expect.stringContaining('native descriptor-relative filesystem API could not be loaded'),
+    });
+    expect(result.content).not.toContain('needle allowed');
+    expect(result.researchSources ?? []).toEqual([]);
+    expect(koffi.load).toHaveBeenCalledOnce();
+    expect(fs.open).not.toHaveBeenCalled();
+    expect(env.handleRead).not.toHaveBeenCalled();
+  },
+);
+
 it.each(['read_file', 'search_workspace'] as const)('rejects poisoned target metadata during %s snapshot capture', async tool => {
   env.files = [uri('src/a.txt')];
   await substituteBeforeOpen('directory', true);
@@ -363,55 +386,53 @@ it.each(['read_file', 'search_workspace'] as const)('rejects poisoned target met
   expect(env.handleRead).not.toHaveBeenCalled();
 });
 
-it('recaptures a transient directory metadata change before opening a file', async () => {
+function mockDirectoryCtimeChanges(mode: 'once' | 'always') {
   const originalLstat = fs.lstat.bind(fs);
-  let changed = false;
+  const state = { targetChecks: 0 };
+  let initialCtimeNs: bigint | undefined;
   vi.spyOn(fs, 'lstat').mockImplementation((async (target: Parameters<typeof fs.lstat>[0], options: Parameters<typeof fs.lstat>[1]) => {
     const stat = await originalLstat(target, options);
-    if (!changed && String(target) === uri('src/a.txt').fsPath) {
-      changed = true;
-      await fs.mkdir(path.join(root, 'unrelated'));
+    if (String(target) === uri('src/a.txt').fsPath) state.targetChecks++;
+    if (String(target) === root) {
+      initialCtimeNs ??= (stat as unknown as BigIntStats).ctimeNs;
+      const change = mode === 'once' ? Math.min(state.targetChecks, 1) : state.targetChecks;
+      // Change only ctime, retaining the real identity and Stats prototype methods.
+      // Target checks bracket each capture, so this does not depend on clock resolution.
+      return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { ctimeNs: initialCtimeNs + BigInt(change) });
     }
     return stat;
   }) as typeof fs.lstat);
-  expect(await invoke('read_file', { path: 'src/a.txt' })).toMatchObject({ status: 'success', content: 'needle allowed' });
-  expect(changed).toBe(true);
+  return state;
+}
+
+it('recaptures a transient directory metadata change before opening a file', async () => {
+  const state = mockDirectoryCtimeChanges('once');
+  const result = await invoke('read_file', { path: 'src/a.txt' });
+  expect(state.targetChecks).toBe(4); // The first capture changes; the second is stable.
+  expect(result).toMatchObject({ status: 'success', content: 'needle allowed' });
   expect(fs.open).not.toHaveBeenCalled();
   expect(env.handleRead).not.toHaveBeenCalled();
 });
 
 it('bounds snapshot recapture without reading when a directory keeps changing', async () => {
-  const originalLstat = fs.lstat.bind(fs);
-  let changes = 0;
-  vi.spyOn(fs, 'lstat').mockImplementation((async (target: Parameters<typeof fs.lstat>[0], options: Parameters<typeof fs.lstat>[1]) => {
-    const stat = await originalLstat(target, options);
-    if (String(target) === uri('src/a.txt').fsPath) await fs.mkdir(path.join(root, `unrelated-${++changes}`));
-    return stat;
-  }) as typeof fs.lstat);
+  const state = mockDirectoryCtimeChanges('always');
   expect(await invoke('read_file', { path: 'src/a.txt' })).toMatchObject({ status: 'error' });
-  expect(changes).toBe(6); // Three captures, each checking the target twice.
+  expect(state.targetChecks).toBe(6); // Three captures, each checking the target twice.
   expect(fs.open).not.toHaveBeenCalled();
   expect(env.handleRead).not.toHaveBeenCalled();
 });
 
 it('retains the initial canonical root across snapshot recaptures', async () => {
-  const originalLstat = fs.lstat.bind(fs);
+  const state = mockDirectoryCtimeChanges('once');
   const originalRealpath = fs.realpath.bind(fs);
-  let redirected = false;
   let rootChecks = 0;
-  vi.spyOn(fs, 'lstat').mockImplementation((async (target: Parameters<typeof fs.lstat>[0], options: Parameters<typeof fs.lstat>[1]) => {
-    const stat = await originalLstat(target, options);
-    if (!redirected && String(target) === uri('src/a.txt').fsPath) {
-      await fs.mkdir(path.join(root, 'unrelated'));
-      redirected = true;
-    }
-    return stat;
-  }) as typeof fs.lstat);
   vi.spyOn(fs, 'realpath').mockImplementation((async (target: Parameters<typeof fs.realpath>[0], ...args: unknown[]) => {
-    if (String(target) === root && ++rootChecks > 3 && redirected) return path.join(root, 'src-other');
+    if (String(target) === root && ++rootChecks > 3 && state.targetChecks > 0) return path.join(root, 'src-other');
     return originalRealpath(target, ...args as []);
   }) as typeof fs.realpath);
   expect(await invoke('read_file', { path: 'src/a.txt' })).toMatchObject({ status: 'error', content: expect.stringContaining('workspace changed') });
+  expect(rootChecks).toBe(4); // Reject the redirected root before starting the retry.
+  expect(state.targetChecks).toBe(2);
   expect(fs.open).not.toHaveBeenCalled();
 });
 
