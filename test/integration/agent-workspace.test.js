@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const nativeFs = require('node:fs');
+const koffi = require('koffi');
 const os = require('node:os');
 const path = require('node:path');
 const vscode = require('vscode');
@@ -14,7 +16,7 @@ async function assertSameDirectory(actual, expected) {
 
 // Exercise the actual source against VS Code's real filesystem, edits and URIs.
 buildSync({ entryPoints: [path.join(__dirname, '../../src/agent-tools.ts')], bundle: true,
-  platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/workspace-tools.cjs') });
+  platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile: path.join(__dirname, '../../out/workspace-tools.cjs') });
 const { invokeAgentTool, toolResultsToMessages, verifyResearchSources } = require('../../out/workspace-tools.cjs');
 
 suite('Agent workspace selection with real files', () => {
@@ -246,6 +248,40 @@ suite('Agent workspace selection with real files', () => {
   test('research stays scoped and read-only under full access and verifies observed bytes', async () => {
     const researchPolicy = { tools: ['read_file', 'search_workspace', 'list_workspace_files'], paths: ['same.txt'] };
     const options = { approvalMode: 'full', researchPolicy, workspaceFolder: folders[1] };
+    if (process.platform !== 'linux' && process.platform !== 'darwin') {
+      const originalReadFile = nativeFs.readFile;
+      const originalLoad = koffi.load;
+      let descriptorReads = 0, nativeLoads = 0;
+      try {
+        nativeFs.readFile = function (file, ...args) {
+          if (typeof file === 'number') descriptorReads++;
+          return originalReadFile.call(this, file, ...args);
+        };
+        koffi.load = function (...args) { nativeLoads++; return originalLoad.apply(this, args); };
+        const read = await call('read_file', { path: 'same.txt' }, folders[1], options);
+        assert.equal(read.status, 'error');
+        assert.match(read.content, /Scoped research is unavailable on this platform/);
+        assert.doesNotMatch(read.content, /root-1/);
+        assert.deepEqual(read.researchSources || [], []);
+        const search = await call('search_workspace', { query: 'root-' }, folders[1], options);
+        assert.equal(search.status, 'success', search.content);
+        assert.match(search.content, /coverage is incomplete/);
+        assert.doesNotMatch(search.content, /root-1/);
+        assert.deepEqual(search.researchSources || [], []);
+        assert.equal(descriptorReads, 0, 'unsupported research must not read any descriptor');
+        assert.equal(nativeLoads, 0, 'unsupported research must reject before loading a native library');
+        assert.equal((await call('read_file', { path: 'package.json' }, folders[1], options)).status, 'error');
+        for (const name of ['write_file', 'delete_file', 'run_command']) {
+          assert.equal((await call(name, { path: 'same.txt', content: 'forbidden', command: process.execPath, args: ['-e', 'process.exit(1)'] }, folders[1], options)).status, 'error');
+        }
+        assert.equal((await call('list_workspace_files', {}, folders[1], options)).content, 'same.txt');
+        assert.equal(await fs.readFile(path.join(roots[1].fsPath, 'same.txt'), 'utf8'), 'root-1');
+      } finally {
+        nativeFs.readFile = originalReadFile;
+        koffi.load = originalLoad;
+      }
+      return;
+    }
     const read = await call('read_file', { path: 'same.txt' }, folders[1], options);
     assert.equal(read.status, 'success');
     assert.equal(read.content, 'root-1');
@@ -273,7 +309,8 @@ suite('Agent workspace selection with real files', () => {
 
   for (const name of ['read_file', 'search_workspace']) {
     for (const replacement of ['hardlink', 'junction']) {
-      test(`research ${name} rejects an outside ${replacement} handle even after the validated path is restored`, async () => {
+      test(`research ${name} rejects an outside ${replacement} substitution even after the validated path is restored`, async function () {
+        if (process.platform !== 'linux' && process.platform !== 'darwin') { this.skip(); return; }
         const prefix = `research-open-race-${name}-${replacement}`;
         const insideDirectory = path.join(roots[1].fsPath, prefix);
         const parkedDirectory = path.join(roots[1].fsPath, `${prefix}-parked`);
@@ -286,54 +323,89 @@ suite('Agent workspace selection with real files', () => {
         await fs.mkdir(outsideDirectory);
         await fs.writeFile(target, 'allowed research source');
         await fs.writeFile(outsideFile, sentinel);
-        const originalOpen = fs.open;
+        const originalLoad = koffi.load;
+        const originalReadFile = nativeFs.readFile;
+        const descriptors = new Set();
         let intercepted = 0, readCalls = 0, closeCalls = 0;
-        let parked = false, linked = false, openedHandle;
-        async function restoreTarget() {
+        let parked = false, linked = false, openedDescriptor, traversalDescriptor, nativeClose;
+        function restoreTarget() {
           if (linked) {
-            // Unlink the named junction itself; never recursively remove its target.
-            if (replacement === 'junction' && process.platform === 'win32') await fs.rmdir(insideDirectory);
-            else await fs.unlink(replacement === 'hardlink' ? target : insideDirectory);
+            // Unlink the directory symlink itself, never its target.
+            nativeFs.unlinkSync(replacement === 'hardlink' ? target : insideDirectory);
             linked = false;
           }
           if (parked) {
-            await fs.rename(replacement === 'hardlink' ? parkedFile : parkedDirectory,
+            nativeFs.renameSync(replacement === 'hardlink' ? parkedFile : parkedDirectory,
               replacement === 'hardlink' ? target : insideDirectory);
             parked = false;
           }
         }
         try {
-          fs.open = async function (file, ...args) {
-            if (path.relative(path.resolve(String(file)), target) !== '') return originalOpen.call(fs, file, ...args);
-            assert.equal(++intercepted, 1, 'intercept exactly the scoped source open');
-            // The production path and ancestor checks have already completed.
-            // Switch the object actually opened, then restore the approved path
-            // before handing the descriptor back: a path-only recheck would pass.
-            await fs.rename(replacement === 'hardlink' ? target : insideDirectory,
-              replacement === 'hardlink' ? parkedFile : parkedDirectory);
-            parked = true;
-            if (replacement === 'hardlink') await fs.link(outsideFile, target);
-            else await fs.symlink(outsideDirectory, insideDirectory, process.platform === 'win32' ? 'junction' : 'dir');
-            linked = true;
-            openedHandle = await originalOpen.call(fs, file, ...args);
-            const actual = await openedHandle.stat({ bigint: true });
-            const outside = await fs.stat(outsideFile, { bigint: true });
-            assert.equal(actual.dev, outside.dev, 'fixture must open the sibling workspace object');
-            assert.equal(actual.ino, outside.ino, 'fixture must open the sibling workspace object');
-            const readFile = openedHandle.readFile.bind(openedHandle);
-            const close = openedHandle.close.bind(openedHandle);
-            openedHandle.readFile = (...readArgs) => { readCalls++; return readFile(...readArgs); };
-            openedHandle.close = (...closeArgs) => { closeCalls++; return close(...closeArgs); };
-            await restoreTarget();
-            assert.equal(await fs.readFile(target, 'utf8'), 'allowed research source', 'approved path is restored before validation resumes');
-            return openedHandle;
+          nativeFs.readFile = function (file, ...args) {
+            if (typeof file === 'number' && descriptors.has(file)) readCalls++;
+            return originalReadFile.call(this, file, ...args);
+          };
+          koffi.load = function (...loadArgs) {
+            const library = originalLoad.apply(this, loadArgs);
+            return {
+              func(signature) {
+                const native = library.func(signature);
+                if (signature === 'int close(int)') {
+                  nativeClose = native;
+                  return fd => {
+                    if (fd === (replacement === 'hardlink' ? openedDescriptor : traversalDescriptor)) closeCalls++;
+                    const result = native(fd);
+                    if (result === 0) descriptors.delete(fd);
+                    return result;
+                  };
+                }
+                if (signature !== 'int openat(int, const char *, int, int)') return native;
+                return (parent, file, flags, mode) => {
+                  const interceptedName = replacement === 'hardlink' ? 'source.txt' : prefix;
+                  if (file !== interceptedName) {
+                    const fd = native(parent, file, flags, mode);
+                    if (fd >= 0) descriptors.add(fd);
+                    return fd;
+                  }
+                  assert.equal(++intercepted, 1, 'intercept exactly the scoped native openat');
+                  traversalDescriptor = parent;
+                  // Path checks are complete. Restore the approved names before
+                  // returning from openat so subsequent validation sees them.
+                  try {
+                    nativeFs.renameSync(replacement === 'hardlink' ? target : insideDirectory,
+                      replacement === 'hardlink' ? parkedFile : parkedDirectory);
+                    parked = true;
+                    if (replacement === 'hardlink') nativeFs.linkSync(outsideFile, target);
+                    else nativeFs.symlinkSync(outsideDirectory, insideDirectory, 'dir');
+                    linked = true;
+                    openedDescriptor = native(parent, file, flags, mode);
+                    if (openedDescriptor >= 0) descriptors.add(openedDescriptor);
+                    if (replacement === 'hardlink') {
+                      assert.ok(openedDescriptor >= 0, 'native openat must open a real descriptor');
+                      const actual = nativeFs.fstatSync(openedDescriptor, { bigint: true });
+                      const outside = nativeFs.statSync(outsideFile, { bigint: true });
+                      assert.equal(actual.dev, outside.dev, 'fixture must open the sibling workspace object');
+                      assert.equal(actual.ino, outside.ino, 'fixture must open the sibling workspace object');
+                    } else {
+                      assert.ok(flags & nativeFs.constants.O_NOFOLLOW, 'directory traversal must forbid symlinks');
+                      assert.equal(openedDescriptor, -1, 'native openat must reject the substituted directory symlink');
+                    }
+                  } finally { restoreTarget(); }
+                  assert.equal(nativeFs.readFileSync(target, 'utf8'), 'allowed research source',
+                    'approved path is restored before validation resumes');
+                  return openedDescriptor;
+                };
+              },
+            };
           };
           const result = await call(name, name === 'read_file' ? { path: `${prefix}/source.txt` } : { query: 'OUTSIDE_RESEARCH_SENTINEL' }, folders[1], {
             approvalMode: 'full', researchPolicy: { tools: [name], paths: [prefix] },
           });
-          assert.equal(intercepted, 1, 'exercise the actual production fs.open path');
+          assert.equal(intercepted, 1, 'exercise the actual production native openat path');
           assert.equal(readCalls, 0, 'outside descriptor must be rejected before reading any bytes');
-          assert.equal(closeCalls, 1, 'rejected descriptor must be closed');
+          assert.equal(closeCalls, 1, replacement === 'hardlink'
+            ? 'rejected outside descriptor must be closed' : 'directory descriptor must close after traversal rejection');
+          assert.equal(descriptors.size, 0, 'all native descriptors must be closed');
           assert.doesNotMatch(result.content, /OUTSIDE_RESEARCH_SENTINEL/);
           assert.deepEqual(result.researchSources || [], [], 'wrong descriptor must never produce a source fingerprint');
           if (name === 'read_file') assert.equal(result.status, 'error', result.content);
@@ -342,9 +414,10 @@ suite('Agent workspace selection with real files', () => {
             assert.match(result.content, /coverage is incomplete/);
           }
         } finally {
-          fs.open = originalOpen;
-          if (openedHandle && !closeCalls) await openedHandle.close();
-          await restoreTarget();
+          koffi.load = originalLoad;
+          nativeFs.readFile = originalReadFile;
+          if (nativeClose) for (const fd of descriptors) nativeClose(fd);
+          restoreTarget();
           // These exact fixture directories are the only recursive cleanup targets.
           assert.equal(path.dirname(path.resolve(insideDirectory)), path.resolve(roots[1].fsPath));
           assert.equal(path.dirname(path.resolve(outsideDirectory)), path.resolve(roots[0].fsPath));
