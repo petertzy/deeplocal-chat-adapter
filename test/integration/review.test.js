@@ -7,7 +7,7 @@ const vscode = require('vscode');
 const { buildSync } = require('esbuild');
 
 buildSync({ entryPoints: [path.join(__dirname, '../../src/chat-panel.ts')], bundle: true,
-  platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/review-panel.cjs') });
+  platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile: path.join(__dirname, '../../out/review-panel.cjs') });
 const { ChatPanel } = require('../../out/review-panel.cjs');
 const execute = promisify(execFile);
 const sourcePath = 'review-fixture/src/math.js';
