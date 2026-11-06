@@ -366,8 +366,14 @@ function posixDescriptorApi(): { openat: (parent: number, name: string, flags: n
 }
 
 class ResearchPathExcluded extends Error {}
+class ResearchWorkspaceAlias extends Error {}
 
 const researchLinkMessage = 'Research does not permit symbolic links in source or workspace paths. Open the canonical workspace directory directly.';
+
+function researchLinkError(current: string, root: string): Error {
+  return containedPath(current, root)
+    ? new ResearchWorkspaceAlias(researchLinkMessage) : new ResearchPathExcluded(researchLinkMessage);
+}
 
 /**
  * The filesystem root is the only absolute path passed to openat. Pathname
@@ -392,7 +398,7 @@ async function withResearchDescriptor<T>(snapshot: ResearchPathSnapshot, options
       const expected = capture ? await fs.lstat(resolved, { bigint: true }) : snapshot.entries[index]?.stat;
       options.signal?.throwIfAborted();
       if (!expected) throw new Error('Research cannot establish file identity for this path.');
-      if (expected.isSymbolicLink()) throw new ResearchPathExcluded(researchLinkMessage);
+      if (expected.isSymbolicLink()) throw researchLinkError(resolved, snapshot.root);
       if (index < parts.length - 1 && !expected.isDirectory()) {
         throw new Error('Research cannot establish directory identity for this path.');
       }
@@ -448,12 +454,15 @@ async function verifyResearchMetadata(snapshot: ResearchPathSnapshot, options: A
     options.signal?.throwIfAborted();
     const current = await fs.lstat(entry.path, { bigint: true });
     options.signal?.throwIfAborted();
-    if (current.isSymbolicLink() || !sameResearchIdentity(entry.stat, current)) {
+    if (current.isSymbolicLink()) throw researchLinkError(entry.path, snapshot.root);
+    if (!sameResearchIdentity(entry.stat, current)) {
       throw new Error('Research path changed during access; no file content was returned.');
     }
   }
-  if (path.relative(snapshot.root, await fs.realpath(snapshot.root)) !== ''
-    || path.relative(snapshot.target, await fs.realpath(snapshot.target)) !== '') {
+  if (path.relative(snapshot.root, await fs.realpath(snapshot.root)) !== '') {
+    throw new ResearchWorkspaceAlias(researchLinkMessage);
+  }
+  if (path.relative(snapshot.target, await fs.realpath(snapshot.target)) !== '') {
     throw new Error('Research path changed during access; no file content was returned.');
   }
   options.signal?.throwIfAborted();
@@ -473,6 +482,10 @@ async function requireResearchPath(uri: vscode.Uri, folder: vscode.WorkspaceFold
   if (!containedPath(root, target) || !scopes.some(scope => containedPath(path.resolve(root, scope), target))) {
     throw new ResearchPathExcluded('Path is outside the research scope.');
   }
+  return captureResearchPath(root, target, folder, options);
+}
+
+async function captureResearchPath(root: string, target: string, folder: vscode.WorkspaceFolder, options: AgentToolOptions): Promise<ResearchPathSnapshot> {
   const snapshot: ResearchPathSnapshot = { root, target, entries: [] };
   if (process.platform === 'linux' || process.platform === 'darwin') {
     await withResearchDescriptor(snapshot, options, true, async () => undefined);
@@ -487,7 +500,7 @@ async function requireResearchPath(uri: vscode.Uri, folder: vscode.WorkspaceFold
     current = part ? path.join(current, part) : current;
     const stat = await fs.lstat(current, { bigint: true });
     options.signal?.throwIfAborted();
-    if (stat.isSymbolicLink()) throw new ResearchPathExcluded(researchLinkMessage);
+    if (stat.isSymbolicLink()) throw researchLinkError(current, root);
     if (stat.ino <= 0n || (!stat.isDirectory() && current !== target)) throw new Error('Research cannot establish file identity for this path.');
     snapshot.entries.push({ path: current, stat });
   }
@@ -510,6 +523,11 @@ async function researchFiles(args: Record<string, unknown>, folder: vscode.Works
   // Validate the entire policy even when discovery returns no files.
   options.researchPolicy!.paths.forEach(researchPath);
   if (folder.uri.scheme !== 'file') throw new Error('Research requires a local workspace folder.');
+  // Validate workspace admission even when discovery has no candidates. A
+  // workspace alias is a configuration error, rather than a source exclusion.
+  requireWorkspaceFolder(folder);
+  const root = path.resolve(folder.uri.fsPath);
+  await captureResearchPath(root, root, folder, options);
   const cancellation = options.signal ? new vscode.CancellationTokenSource() : undefined;
   const cancel = () => cancellation?.cancel();
   options.signal?.addEventListener('abort', cancel, { once: true });
@@ -527,6 +545,7 @@ async function researchFiles(args: Record<string, unknown>, folder: vscode.Works
       } catch (error) {
         options.signal?.throwIfAborted();
         if (error instanceof Error && error.name === 'AbortError') throw error;
+        if (error instanceof ResearchWorkspaceAlias) throw error;
         // Policy exclusions are expected. A failed inspection of an assigned
         // candidate instead leaves a gap in coverage, without exposing its path.
         if (!(error instanceof ResearchPathExcluded)) unavailable++;
@@ -596,6 +615,7 @@ async function invokeResearchTool(name: string, args: Record<string, unknown>, o
     } catch (error) {
       options.signal?.throwIfAborted();
       if (error instanceof Error && error.name === 'AbortError') throw error;
+      if (error instanceof ResearchWorkspaceAlias) throw error;
       if (!(error instanceof ResearchPathExcluded)) skipped++;
       continue;
     }
