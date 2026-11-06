@@ -572,7 +572,7 @@ suite('Agent workspace selection with real files', () => {
         { researchPolicy: { tools: ['read_file'], paths: ['same.txt'] } });
       assert.equal(result.status, 'error');
       assert.match(result.content, /symbolic links/i);
-      assert.match(result.content, /canonical directory/i);
+      assert.match(result.content, /canonical workspace directory/i);
       assert.deepEqual(result.researchSources || [], []);
     } finally { await changeFolders(index, 1); await fs.unlink(alias); }
   });
