@@ -528,6 +528,7 @@ async function researchFiles(args: Record<string, unknown>, folder: vscode.Works
   requireWorkspaceFolder(folder);
   const root = path.resolve(folder.uri.fsPath);
   await captureResearchPath(root, root, folder, options);
+  options.signal?.throwIfAborted();
   const cancellation = options.signal ? new vscode.CancellationTokenSource() : undefined;
   const cancel = () => cancellation?.cancel();
   options.signal?.addEventListener('abort', cancel, { once: true });
