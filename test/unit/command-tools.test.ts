@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, access } from 'node:fs/promises';
+import { mkdtemp, rm, access, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as vscode from 'vscode';
@@ -12,7 +12,7 @@ vi.mock('vscode', () => ({
 }));
 let directory: string;
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), 'command-tools-'));
+  directory = await realpath(await mkdtemp(join(tmpdir(), 'command-tools-')));
   env.folders = [folder(directory)];
   env.confirm.mockReset();
 });

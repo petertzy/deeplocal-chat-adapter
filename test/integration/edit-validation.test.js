@@ -5,7 +5,7 @@ const vscode = require('vscode');
 const { buildSync } = require('esbuild');
 
 buildSync({ entryPoints: [path.join(__dirname, '../../src/agent-tools.ts')], bundle: true,
-  platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/edit-validation-tools.cjs') });
+  platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile: path.join(__dirname, '../../out/edit-validation-tools.cjs') });
 const { invokeAgentTool } = require('../../out/edit-validation-tools.cjs');
 
 suite('TypeScript edit validation with real documents', () => {
