@@ -3,7 +3,7 @@
   "name": "deeplocal-chat-adapter",
   "displayName": "deeplocal-chat-adapter",
   "description": "Connect DeepLocal OpenAI-compatible models to VS Code.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "petertzy",
   "private": true,
   "license": "MIT",
