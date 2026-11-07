@@ -96,6 +96,9 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   textarea { display: block; width: 100%; min-height: 68px; max-height: 160px; resize: none; background: transparent; border: none; outline: none !important; padding: 1px; color: var(--vscode-input-foreground, #eee); }
   textarea::placeholder { color: var(--vscode-input-placeholderForeground, #888); }
   .composer-toolbar { display: flex; align-items: center; gap: 7px; margin-top: 8px; min-width: 0; }
+  .modes { display: flex; border: 1px solid var(--vscode-panel-border, #ffffff20); border-radius: 5px; padding: 2px; gap: 1px; }
+  .modes button { font-size: 11px; padding: 2px 6px; }
+  .modes button[aria-pressed="true"] { background: var(--vscode-button-secondaryBackground, #3a3a3a); color: var(--vscode-button-secondaryForeground, #eee); }
   select { min-width: 0; border: 1px solid var(--vscode-input-border, #ffffff20); background: var(--vscode-dropdown-background, #242424); border-radius: 4px; padding: 5px; }
   #permissionMode { max-width: 116px; font-size: 11px; }
   #model { flex: 1; width: 0; font-size: 11px; border: 0; padding-left: 0; }
@@ -152,6 +155,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       </div>
       <textarea id="prompt" aria-label="Task" placeholder="Ask the agent to build, fix, or explore…" rows="3"></textarea>
       <div class="composer-toolbar">
+        <div class="modes" role="group" aria-label="Mode"><button id="chatMode" aria-pressed="true" title="Discuss without workspace operations">Chat</button><button id="agentMode" aria-pressed="false" title="Inspect files and perform approved workspace operations">Agent</button></div>
         <select id="permissionMode" aria-label="Agent mode" title="Agent mode"><option value="every">Approve every action</option><option value="safe">Safe auto</option><option value="full">Full access</option><option value="ask">Ask only</option></select>
         <select id="model" aria-label="Model"><option value="">Loading models…</option></select>
         <button id="send" class="primary icon" aria-label="Send task" title="Send task" disabled><svg viewBox="0 0 16 16"><path d="M8 13V3M3 8l5-5 5 5"/></svg></button>
@@ -186,13 +190,13 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   const summaries = new Map();
   const copies = new Map();
   let copyRequestId = 0;
-  let busy = false, activeSessionId, canSelectWorkspace = false;
+  let busy = false, useAgent = saved.useAgent === true, activeSessionId, canSelectWorkspace = false;
   let workflow = 'normal', workflowPending = false, activeReview = false;
   let currentAssistant, currentReasoning, currentCompletion, assistantText = '', reasoningText = '', approvalId, failed = false;
   let selectedModel = saved.model || '', selectedBackend = saved.backend, approvalMode = saved.approvalMode || 'safe';
   let scheduledRender;
   const welcome = byId('welcome');
-  function remember() { vscode.setState({ drafts: Object.fromEntries(drafts), model: model.value, backend: selectedBackend, approvalMode }); }
+  function remember() { vscode.setState({ drafts: Object.fromEntries(drafts), model: model.value, backend: selectedBackend, approvalMode, useAgent }); }
   function nearBottom() { return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 90; }
   function follow(wasNear) { if (wasNear) messages.scrollTop = messages.scrollHeight; }
   function syncSend() { send.disabled = busy || workflowPending || !model.value || (workflow !== 'review' && !prompt.value.trim()); }
@@ -200,7 +204,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   function setBusy(value) {
     busy = value;
     byId('shell').dataset.busy = String(value);
-    for (const id of ['session', 'newSession', 'deleteSession', 'historyButton', 'backendButton', 'refresh', 'model', 'permissionMode', 'setRemoteKeyButton', 'clearRemoteKeyButton', 'apiMode', 'reasoningSummary']) byId(id).disabled = value || (id === 'reasoningSummary' && byId('apiMode').value !== 'responses');
+    for (const id of ['session', 'newSession', 'deleteSession', 'historyButton', 'backendButton', 'refresh', 'model', 'chatMode', 'agentMode', 'permissionMode', 'setRemoteKeyButton', 'clearRemoteKeyButton', 'apiMode', 'reasoningSummary']) byId(id).disabled = value || (id === 'reasoningSummary' && byId('apiMode').value !== 'responses');
     send.hidden = value; stop.hidden = !value; stop.disabled = false; syncSend();
     byId('workspaceButton').disabled = value || !canSelectWorkspace;
     updateComposerState();
@@ -211,6 +215,11 @@ export function renderChatHtml(webview: { cspSource: string }): string {
     byId('reviewOptions').hidden = !reviewing;
     byId('reviewCommits').hidden = byId('reviewSource').value !== 'commits';
     byId('permissionMode').hidden = reviewing; byId('permissionMode').disabled = busy || reviewing || workflowPending;
+    byId('chatMode').hidden = reviewing; byId('agentMode').hidden = reviewing;
+    byId('chatMode').disabled = busy || reviewing || workflowPending;
+    byId('agentMode').disabled = busy || reviewing || workflowPending;
+    byId('chatMode').setAttribute('aria-pressed', String(!useAgent));
+    byId('agentMode').setAttribute('aria-pressed', String(useAgent));
     for (const id of ['reviewSource', 'reviewBase', 'reviewTarget']) byId(id).disabled = busy || workflowPending;
     send.setAttribute('aria-label', reviewing ? 'Review changes' : 'Send task'); send.title = reviewing ? 'Review changes' : 'Send task';
     prompt.setAttribute('aria-label', reviewing ? 'Review focus (optional)' : 'Task');
@@ -222,8 +231,8 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       byId('modeHint').textContent = 'Read-only review · Tests are not run · Shift+Enter for newline';
       prompt.placeholder = 'Optional: focus the review on a concern…';
     } else {
-      byId('modeHint').textContent = permissionHints[approvalMode] + ' · Shift+Enter for newline';
-      prompt.placeholder = approvalMode === 'ask' ? 'Ask about your project…' : 'Ask the agent to build, fix, or explore…';
+      byId('modeHint').textContent = useAgent ? 'Agent · ' + permissionHints[approvalMode] + ' · Shift+Enter for newline' : 'Chat · No workspace operations · Shift+Enter for newline';
+      prompt.placeholder = useAgent ? (approvalMode === 'ask' ? 'Ask about your project…' : 'Ask the agent to build, fix, or explore…') : 'Ask a question…';
     }
     syncSend();
   }
@@ -576,7 +585,7 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       const review = { source };
       if (source === 'commits') { review.base = byId('reviewBase').value.trim(); review.target = byId('reviewTarget').value.trim(); }
       vscode.postMessage({ type: 'send', text, model: model.value, review });
-    } else vscode.postMessage({ type: 'send', text, model: model.value, useAgent: approvalMode !== 'ask' });
+    } else vscode.postMessage({ type: 'send', text, model: model.value, useAgent });
   });
   stop.addEventListener('click', () => { stop.disabled = true; status.textContent = 'Stopping…'; vscode.postMessage({ type: 'stop' }); });
   prompt.addEventListener('input', () => { if (activeSessionId) drafts.set(activeSessionId, prompt.value); remember(); resizePrompt(); });
@@ -585,6 +594,8 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   byId('deleteSession').addEventListener('click', () => vscode.postMessage({ type: 'deleteSession', sessionId: byId('session').value }));
   byId('session').addEventListener('change', () => { toggleSheet('', false); vscode.postMessage({ type: 'switchSession', sessionId: byId('session').value }); });
   model.addEventListener('change', () => { selectedModel = model.value; model.title = model.value; remember(); syncSend(); });
+  byId('chatMode').addEventListener('click', () => { useAgent = false; remember(); updateComposerState(); });
+  byId('agentMode').addEventListener('click', () => { useAgent = true; remember(); updateComposerState(); });
   byId('apiMode').addEventListener('change', () => vscode.postMessage({ type: 'setApiMode', apiMode: byId('apiMode').value }));
   byId('reasoningSummary').addEventListener('change', () => vscode.postMessage({ type: 'setSummary', summary: byId('reasoningSummary').value }));
   byId('permissionMode').addEventListener('change', () => { approvalMode = byId('permissionMode').value; updateComposerState(); remember(); vscode.postMessage({ type: 'setApprovalMode', approvalMode }); });
