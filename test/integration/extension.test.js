@@ -60,7 +60,7 @@ suite('deeplocal-chat-adapter Extension Host', () => {
 
   test('uses a single workspace folder automatically without selection', async () => {
     buildSync({ entryPoints: [path.join(__dirname, '../../src/agent-tools.ts')], bundle: true,
-      platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/single-workspace-tools.cjs') });
+      platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile: path.join(__dirname, '../../out/single-workspace-tools.cjs') });
     const { invokeAgentTool } = require('../../out/single-workspace-tools.cjs');
     assert.equal(vscode.workspace.workspaceFolders.length, 1);
     const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, 'single.txt');
@@ -72,7 +72,7 @@ suite('deeplocal-chat-adapter Extension Host', () => {
 
   test('completion reports bind failed real commands and unexecuted builds to saved host evidence', async () => {
     buildSync({ entryPoints: [path.join(__dirname, '../../src/chat-panel.ts')], bundle: true,
-      platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/completion-panel.cjs') });
+      platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile: path.join(__dirname, '../../out/completion-panel.cjs') });
     const { ChatPanel } = require('../../out/completion-panel.cjs');
     const config = vscode.workspace.getConfiguration('deeplocal');
     const oldMode = config.inspect('approvalMode')?.globalValue;
@@ -137,7 +137,7 @@ suite('deeplocal-chat-adapter Extension Host', () => {
 
   async function repairPanel(responses, approvalMode = 'full', repairLimit = 3) {
     buildSync({ entryPoints: [path.join(__dirname, '../../src/chat-panel.ts')], bundle: true,
-      platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/repair-panel.cjs') });
+      platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile: path.join(__dirname, '../../out/repair-panel.cjs') });
     delete require.cache[require.resolve('../../out/repair-panel.cjs')];
     const { ChatPanel } = require('../../out/repair-panel.cjs');
     const config = vscode.workspace.getConfiguration('deeplocal');
@@ -309,7 +309,7 @@ suite('deeplocal-chat-adapter Extension Host', () => {
 
   test('restores the latest request preview and selection without adding persisted fields', async () => {
     buildSync({ entryPoints: [path.join(__dirname, '../../src/chat-panel.ts')], bundle: true,
-      platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/session-preview-panel.cjs') });
+      platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile: path.join(__dirname, '../../out/session-preview-panel.cjs') });
     const { ChatPanel, workspaceIdentity } = require('../../out/session-preview-panel.cjs');
     const scope = workspaceIdentity();
     const key = `deeplocal.sessions.${scope}`;

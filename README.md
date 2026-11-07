@@ -77,22 +77,28 @@ tasks. Children use the selected model and backend; remote requests may incur
 charges. Each child receives bounded context and may only use `read_file`,
 `search_workspace`, `list_workspace_files`, and `get_diagnostics` within its
 assigned paths. Children cannot run commands, edit files, or delegate further.
-Research requires a local workspace and rejects symbolic links and junctions.
-On supported POSIX platforms, scoped reads use descriptor-relative traversal so
-concurrent path substitutions cannot redirect a child outside its assigned
-workspace paths. Platforms without this primitive fail closed for scoped reads.
+Research requires a local workspace and rejects symbolic links and junctions,
+including aliases in the workspace path or its ancestors. Open the canonical
+directory directly when a workspace is reached through an alias.
+On supported POSIX platforms, scoped reads traverse from the filesystem root
+through held directory descriptors so concurrent path substitutions cannot
+redirect a child outside its assigned workspace paths. Platforms without this
+primitive fail closed for scoped reads.
 
 The parent waits for the research batch before continuing. Named expandable
 cards show queued, working, and terminal states, model findings, observed
 evidence, and limitations. Successful sibling findings remain visible when a
 child fails, reaches a deadline or allowance, or is cancelled. **Stop** cancels active
-children, queued work, and pending approvals. Saved sessions retain the research
-cards and their attribution. Copying a child result preserves its identity,
-evidence, limitations, and `testsRun: false`.
+children, queued work, and pending approvals. It also aborts active file reads,
+stopping further internal buffering after any already-submitted OS request settles.
+Saved sessions retain the research cards and their attribution. Copying a child
+result preserves its identity, evidence, limitations, and `testsRun: false`.
 
-Discovery is bounded and reports incomplete candidate coverage. File evidence
-is checked again before accepting a result; findings describe observed content
-and can become stale after later edits. Child deadlines include approval waits;
+Discovery is bounded and reports incomplete candidate coverage, including assigned
+candidates that could not be inspected safely. Successful findings remain available
+when another assigned source is unavailable. File evidence is checked again
+before accepting a result; findings describe observed content and can become
+stale after later edits. Child deadlines include approval waits;
 batch deadlines also include queue time. Restarted sessions mark unfinished
 children as interrupted instead of resuming them.
 
