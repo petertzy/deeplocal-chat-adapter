@@ -92,14 +92,62 @@ it('checks selected workspace identity again after approval and refuses remote c
 
 it('never substitutes another workspace after selection or passes a shell by default', async () => {
   const second = join(directory, 'second');
-  const { mkdir } = await import('node:fs/promises'); await mkdir(second);
+  const { mkdir, realpath } = await import('node:fs/promises');
+  await mkdir(second);
+
   env.folders = [folder(directory), folder(second)];
   const selected = env.folders[1];
-  const options = { workspaceFolder: selected, approvalMode: 'every' as const, approve: async () => { options.workspaceFolder = env.folders[0]; return true; } };
-  const result = await call("console.log(process.cwd());console.log(process.argv[1])", options);
-  expect(JSON.parse(result.content)).toMatchObject({ cwd: second, stdout: second + '\nundefined\n' });
-  const literal = await invokeAgentTool('literal', 'run_command', JSON.stringify({ command: process.execPath,
-    args: ['-e', 'console.log(process.argv[1])', '$(touch unexpected)'] }), { approvalMode: 'full', workspaceFolder: selected });
-  expect(JSON.parse(literal.content).stdout).toBe('$(touch unexpected)\n');
-  await expect(access(join(second, 'unexpected'))).rejects.toThrow();
+
+  const options = {
+    workspaceFolder: selected,
+    approvalMode: 'every' as const,
+    approve: async () => {
+      options.workspaceFolder = env.folders[0];
+      return true;
+    },
+  };
+
+  const result = await call(
+    'console.log(process.cwd());console.log(process.argv[1])',
+    options,
+  );
+
+  const parsed = JSON.parse(result.content);
+  const actualCwd = parsed.stdout.split('\n')[0];
+
+  // Verify that the originally selected workspace is preserved.
+  expect(parsed.cwd).toBe(second);
+
+  // Resolve symbolic links to handle macOS /var vs /private/var.
+  expect(await realpath(actualCwd)).toBe(await realpath(second));
+
+  // Verify that no unexpected command-line argument was passed.
+  expect(parsed.stdout.slice(actualCwd.length)).toBe('\nundefined\n');
+
+  // Verify that shell expansion is disabled by default.
+  const literal = await invokeAgentTool(
+    'literal',
+    'run_command',
+    JSON.stringify({
+      command: process.execPath,
+      args: [
+        '-e',
+        'console.log(process.argv[1])',
+        '$(touch unexpected)',
+      ],
+    }),
+    {
+      approvalMode: 'full',
+      workspaceFolder: selected,
+    },
+  );
+
+  expect(JSON.parse(literal.content).stdout).toBe(
+    '$(touch unexpected)\n',
+  );
+
+  // Verify that no file was created through shell injection.
+  await expect(
+    access(join(second, 'unexpected')),
+  ).rejects.toThrow();
 });

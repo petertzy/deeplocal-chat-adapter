@@ -502,13 +502,13 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       this.post({ type: 'assistantStart', agent: effectiveAgent });
 
       const messages = [...session.history];
-      if ((effectiveAgent || getConfig().injectSystemPrompt) && messages[0]?.role !== 'system') {
+      if (effectiveAgent && messages[0]?.role !== 'system') {
         messages.unshift({
           role: 'system',
           content: [
             'You are DeepLocal, a coding assistant inside VS Code.',
             'Automatically use the user’s conversational language for progress updates, explanations, and the final answer. Respect explicit requests for a different response language. Short acknowledgements, quoted text, code and logs do not change the conversation language. Never ask the user to select a language in settings. Keep code, paths and command output unchanged.',
-            effectiveAgent ? 'You are in Agent mode. Execute requested work using tools, then report actual results. Do not print full file contents in chat when asked to implement something.' : permissionMode === 'ask' ? 'You are in Ask-only mode. Analyze, explain, and suggest changes, but do not claim to have performed operations.' : 'You are in Chat mode. Explain and discuss; no file changes or commands are available.',
+            'You are in Agent mode. Execute requested work using tools, then report actual results. Do not print full file contents in chat when asked to implement something.',
             'Inspect the workspace before changing files. Paths are relative to the workspace root.',
             'When asked to create a new file, use create_file with an appropriate new path. Never replace the active file merely because it is open.',
             'Read existing files before editing. Use replace_in_file for targeted changes; write_file for intentional full replacements.',
@@ -523,7 +523,23 @@ export class ChatPanel implements vscode.WebviewViewProvider {
             'Ask before destructive work; file write and command tools already require user confirmation.',
             'After creating a file, use open_file if appropriate. Check diagnostics or run relevant tests. Report whether verification actually ran.',
             'If a tool fails or is declined, respect that result and never claim that the action succeeded. Answer in the user’s language.',
-            'In Agent mode, finish with submit_completion, as the only tool call in that turn, even when no tools ran. List exact command/args for every requested or declared verification check, including any build/test not run. The host records all attempts and derives canonical states. Use nextSteps only for actionable suggestions in the user’s conversational language; no free-form success summary. A passed declared command does not prove that all project errors are fixed.',
+            'For a conversational request that does not need workspace operations, answer directly without calling tools or submit_completion. Never claim that a file was inspected, changed, or verified unless a tool result in this task confirms it.',
+            'After workspace operations or requested verification, finish with submit_completion as the only tool call in that turn. List exact command/args for every requested or declared verification check, including any build/test not run. The host records all attempts and derives canonical states. Use nextSteps only for actionable suggestions in the user’s conversational language; no free-form success summary. A passed declared command does not prove that all project errors are fixed.',
+          ].join('\n'),
+        });
+      } else if (getConfig().injectSystemPrompt && messages[0]?.role !== 'system') {
+        // Chat requests deliberately receive no agent workflow instructions: no
+        // tools are attached to them, and those instructions make ordinary
+        // conversation both contradictory and unnecessarily difficult.
+        messages.unshift({
+          role: 'system',
+          content: [
+            'You are DeepLocal, a helpful assistant inside VS Code.',
+            'Always answer in the language of the user’s latest message unless they explicitly request another language. Answer directly and accurately.',
+            permissionMode === 'ask'
+              ? 'This is Ask-only mode. Explain and suggest changes, but do not claim to have performed operations.'
+              : 'This is Chat mode. No tools are available, so do not claim to have inspected files, run commands, or changed the workspace.',
+            'For everyday conversation, respond naturally without assuming the user wants a coding task. State uncertainty instead of presenting unverified information as fact.',
           ].join('\n'),
         });
       }
@@ -731,6 +747,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       }
 
       if (!toolCalls.length) {
+        const latestUserMessage = [...workingMessages].reverse().find(message => message.role === 'user')?.content ?? '';
+        if (!requiresVerificationEvidence(latestUserMessage)) {
+          if (!answer.trim()) throw new Error('The model returned no answer or tool actions. Retry or choose another model.');
+          return answer;
+        }
         // An agent can hallucinate a passed build before its first tool, too.
         // Chat/Ask keep prose; Agent completions require observed evidence.
         if (!answer.trim()) throw new Error('The model returned no answer or tool actions. Retry or choose another model.');
@@ -1123,6 +1144,10 @@ function summarizeUserMessage(content: string | null | undefined): string {
 
   const firstLine = content.split(/\r?\n/).find((line) => line.trim());
   return firstLine?.trim() ?? '';
+}
+
+function requiresVerificationEvidence(content: string | null): boolean {
+  return /\b(build|compile|test|lint|verify|check|fix|implement|create|write|edit|modify|delete|rename|run|install|deploy|publish|migrate)\b/i.test(content ?? '');
 }
 
 function messageOf(error: unknown): string {

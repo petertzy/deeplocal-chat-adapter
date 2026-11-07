@@ -453,6 +453,33 @@ function panelHarness(responses: StreamEvent[][], savedItems?: Array<Record<stri
   return { panel, sent, requests, state, webview, client, send: (message: unknown) => receive(message) };
 }
 
+it('keeps ordinary chat free of agent-only tool and verification instructions', async () => {
+  const harness = panelHarness([[{ kind: 'text', value: 'Hello! How can I help?' }]]);
+  harness.send({ type: 'send', model: 'test', text: 'Hello there', useAgent: false });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
+
+  const request = harness.requests[0];
+  const prompt = request.messages[0]?.content ?? '';
+  expect(request.tools).toBeUndefined();
+  expect(prompt).toContain('helpful assistant');
+  expect(prompt).toContain('everyday conversation');
+  expect(prompt).toContain('Always answer in the language of the user’s latest message');
+  expect(prompt).not.toContain('discover_verification_commands');
+  expect(prompt).not.toContain('submit_completion');
+  expect(prompt).not.toContain('create_file');
+});
+
+it('keeps a conversational Agent reply free of verification evidence', async () => {
+  const harness = panelHarness([[{ kind: 'text', value: 'Hello! How can I help?' }]]);
+  harness.send({ type: 'send', model: 'test', text: 'Hello there', useAgent: true });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
+
+  const final = harness.sent.find(message => message.type === 'assistantFinal')!;
+  expect(final).toMatchObject({ text: 'Hello! How can I help?' });
+  expect(final.completionReport).toBeUndefined();
+  expect(harness.sent.some(message => message.type === 'toolStart')).toBe(false);
+});
+
 const completion = (checks: unknown[], nextSteps = ''): StreamEvent => ({ kind: 'toolCall', value: {
   id: 'completion82', type: 'function', function: { name: 'submit_completion', arguments: JSON.stringify({ checks, nextSteps }) },
 } });
