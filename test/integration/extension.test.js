@@ -122,8 +122,9 @@ suite('deeplocal-chat-adapter Extension Host', () => {
       while (!posts.some(message => message.type === 'restore')) { assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20)); }
       assert.deepEqual(posts.find(message => message.type === 'restore').items.at(-1).completionReport, report);
       receive({ type: 'send', text: 'Explain the next step only', model: 'synthetic' }); await waitDone(2);
-      const next = posts.filter(message => message.type === 'assistantFinal').at(-1).completionReport;
-      assert.equal(next.verification, 'unverified'); assert.deepEqual(next.attempts, []);
+      const next = posts.filter(message => message.type === 'assistantFinal').at(-1);
+      assert.equal(next.text, 'All fixed and verified.');
+      assert.equal(next.completionReport, undefined);
     } finally {
       dispose?.(); for (const subscription of subscriptions) subscription.dispose();
       await config.update('approvalMode', oldMode, vscode.ConfigurationTarget.Global);
