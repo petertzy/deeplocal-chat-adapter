@@ -469,6 +469,17 @@ it('keeps ordinary chat free of agent-only tool and verification instructions', 
   expect(prompt).not.toContain('create_file');
 });
 
+it('keeps a conversational Agent reply free of verification evidence', async () => {
+  const harness = panelHarness([[{ kind: 'text', value: 'Hello! How can I help?' }]]);
+  harness.send({ type: 'send', model: 'test', text: 'Hello there', useAgent: true });
+  await vi.waitFor(() => expect(harness.sent.some(message => message.type === 'assistantDone')).toBe(true));
+
+  const final = harness.sent.find(message => message.type === 'assistantFinal')!;
+  expect(final).toMatchObject({ text: 'Hello! How can I help?' });
+  expect(final.completionReport).toBeUndefined();
+  expect(harness.sent.some(message => message.type === 'toolStart')).toBe(false);
+});
+
 const completion = (checks: unknown[], nextSteps = ''): StreamEvent => ({ kind: 'toolCall', value: {
   id: 'completion82', type: 'function', function: { name: 'submit_completion', arguments: JSON.stringify({ checks, nextSteps }) },
 } });

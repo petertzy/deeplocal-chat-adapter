@@ -517,7 +517,8 @@ export class ChatPanel implements vscode.WebviewViewProvider {
             'Ask before destructive work; file write and command tools already require user confirmation.',
             'After creating a file, use open_file if appropriate. Check diagnostics or run relevant tests. Report whether verification actually ran.',
             'If a tool fails or is declined, respect that result and never claim that the action succeeded. Answer in the user’s language.',
-            'In Agent mode, finish with submit_completion, as the only tool call in that turn, even when no tools ran. List exact command/args for every requested or declared verification check, including any build/test not run. The host records all attempts and derives canonical states. Use nextSteps only for actionable suggestions in the user’s conversational language; no free-form success summary. A passed declared command does not prove that all project errors are fixed.',
+            'For a conversational request that does not need workspace operations, answer directly without calling tools or submit_completion. Never claim that a file was inspected, changed, or verified unless a tool result in this task confirms it.',
+            'After workspace operations or requested verification, finish with submit_completion as the only tool call in that turn. List exact command/args for every requested or declared verification check, including any build/test not run. The host records all attempts and derives canonical states. Use nextSteps only for actionable suggestions in the user’s conversational language; no free-form success summary. A passed declared command does not prove that all project errors are fixed.',
           ].join('\n'),
         });
       } else if (getConfig().injectSystemPrompt && messages[0]?.role !== 'system') {
@@ -684,6 +685,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       }
 
       if (!toolCalls.length) {
+        const latestUserMessage = [...workingMessages].reverse().find(message => message.role === 'user')?.content ?? '';
+        if (!requiresVerificationEvidence(latestUserMessage)) {
+          if (!answer.trim()) throw new Error('The model returned no answer or tool actions. Retry or choose another model.');
+          return answer;
+        }
         // An agent can hallucinate a passed build before its first tool, too.
         // Chat/Ask keep prose; Agent completions require observed evidence.
         if (!answer.trim()) throw new Error('The model returned no answer or tool actions. Retry or choose another model.');
@@ -1029,6 +1035,10 @@ function summarizeUserMessage(content: string | null | undefined): string {
 
   const firstLine = content.split(/\r?\n/).find((line) => line.trim());
   return firstLine?.trim() ?? '';
+}
+
+function requiresVerificationEvidence(content: string | null): boolean {
+  return /\b(build|compile|test|lint|verify|check|fix|implement|create|write|edit|modify|delete|rename|run|install|deploy|publish|migrate)\b/i.test(content ?? '');
 }
 
 function messageOf(error: unknown): string {
