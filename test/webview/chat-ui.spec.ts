@@ -660,15 +660,13 @@ test('only completed answers get Copy controls and restored answers retain them'
   expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'copy', text: 'Saved answer' });
 });
 
-test('preserves model selection, exposes agent modes, and does not submit IME composition', async ({ page }) => {
+test('defaults to Chat, preserves the selected mode, and does not submit IME composition', async ({ page }) => {
   await page.locator('#model').selectOption('local-model');
   await dispatch(page, { type: 'models', models: ['gpt-6-luna', 'local-model'], backend: 'remote', hasApiKey: true });
   await expect(page.locator('#model')).toHaveValue('local-model');
-  await expect(page.locator('#agentMode')).toHaveCount(0);
-  await expect(page.locator('#chatMode')).toHaveCount(0);
+  await expect(page.locator('#chatMode')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#agentMode')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('#permissionMode option')).toHaveText(['Approve every action', 'Safe auto', 'Full access', 'Ask only']);
-  await page.locator('#permissionMode').selectOption('ask');
-  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setApprovalMode', approvalMode: 'ask' });
   await page.locator('#prompt').fill('Hello');
   await page.locator('#prompt').dispatchEvent('keydown', { key: 'Enter', isComposing: true });
   expect(await page.evaluate(() => window.__messages.some(message => message.type === 'send'))).toBe(false);
@@ -680,6 +678,11 @@ test('preserves model selection, exposes agent modes, and does not submit IME co
   await dispatch(page, { type: 'assistantDone', outcome: 'cancelled' });
   await expect(page.locator('#status')).toContainText('Stopped');
   await expect(page.locator('#stop')).toBeHidden();
+  await page.locator('#agentMode').click();
+  await expect(page.locator('#agentMode')).toHaveAttribute('aria-pressed', 'true');
+  await page.locator('#prompt').fill('Build it');
+  await page.locator('#prompt').press('Enter');
+  expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'send', useAgent: true, model: 'local-model', text: 'Build it' });
 });
 
 test('preserves progress across multiple operations, interruption and history restore', async ({ page }) => {
@@ -740,10 +743,10 @@ test('streams provider summaries independently from commentary and the final ans
 });
 
 test('keeps controls accessible while switching API protocol and summary settings', async ({ page }) => {
-  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask the agent to build, fix, or explore…');
+  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask a question…');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.locator('#settingsButton')).toHaveAttribute('aria-label', 'Settings');
-  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask the agent to build, fix, or explore…');
+  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask a question…');
   await page.locator('#apiMode').selectOption('responses');
   expect(await page.evaluate(() => window.__messages.at(-1))).toMatchObject({ type: 'setApiMode', apiMode: 'responses' });
   await dispatch(page, { type: 'models', models: ['local-model'], backend: 'local', apiMode: 'responses', reasoningSummary: 'auto' });

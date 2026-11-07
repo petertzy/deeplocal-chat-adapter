@@ -463,6 +463,7 @@ it('keeps ordinary chat free of agent-only tool and verification instructions', 
   expect(request.tools).toBeUndefined();
   expect(prompt).toContain('helpful assistant');
   expect(prompt).toContain('everyday conversation');
+  expect(prompt).toContain('Always answer in the language of the user’s latest message');
   expect(prompt).not.toContain('discover_verification_commands');
   expect(prompt).not.toContain('submit_completion');
   expect(prompt).not.toContain('create_file');

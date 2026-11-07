@@ -528,7 +528,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
           role: 'system',
           content: [
             'You are DeepLocal, a helpful assistant inside VS Code.',
-            'Answer the user directly, accurately, and in their conversational language unless they request another language.',
+            'Always answer in the language of the user’s latest message unless they explicitly request another language. Answer directly and accurately.',
             permissionMode === 'ask'
               ? 'This is Ask-only mode. Explain and suggest changes, but do not claim to have performed operations.'
               : 'This is Chat mode. No tools are available, so do not claim to have inspected files, run commands, or changed the workspace.',
