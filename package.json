@@ -176,6 +176,60 @@
           },
           "description": "Preferred verification categories for Agent tasks. Empty automatically selects available project checks; a non-empty list limits suggested checks to the selected categories."
         },
+        "deeplocal.subagents.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow normal Agent tasks to delegate scoped read-only research to the selected model. Remote research requests may incur provider charges."
+        },
+        "deeplocal.subagents.maxConcurrent": {
+          "type": "integer",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Maximum research subagents running concurrently."
+        },
+        "deeplocal.subagents.maxTasks": {
+          "type": "integer",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Maximum research subagents across all batches in one Agent request."
+        },
+        "deeplocal.subagents.maxTurns": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum model turns per research subagent."
+        },
+        "deeplocal.subagents.timeoutMs": {
+          "type": "integer",
+          "default": 120000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "description": "Research subagent runtime limit in milliseconds, including approval waits."
+        },
+        "deeplocal.subagents.batchTimeoutMs": {
+          "type": "integer",
+          "default": 300000,
+          "minimum": 1000,
+          "maximum": 900000,
+          "description": "Research batch deadline in milliseconds, including queued tasks."
+        },
+        "deeplocal.subagents.maxOutputTokens": {
+          "type": "integer",
+          "default": 8192,
+          "minimum": 128,
+          "maximum": 32768,
+          "description": "Cumulative requested generation-token allowance per research subagent. Requests reserve their full output ceiling; this is not an exact billing total."
+        },
+        "deeplocal.subagents.totalOutputTokens": {
+          "type": "integer",
+          "default": 32768,
+          "minimum": 128,
+          "maximum": 131072,
+          "description": "Cumulative requested generation-token allowance across all research subagents in one Agent request. Input context is bounded separately."
+        },
         "deeplocal.agentMaxRepairIterations": {
           "type": "integer",
           "default": 3,
@@ -264,7 +318,8 @@
     "test:watch": "vitest",
     "test:webview": "playwright test",
     "check": "npm run check-types && npm run lint && npm test",
-    "test:integration": "npm run compile && vscode-test"
+    "test:integration": "npm run compile && vscode-test",
+    "test:package": "node scripts/test-package.cjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
@@ -280,5 +335,8 @@
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.2",
     "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "koffi": "^2.16.3"
   }
 }

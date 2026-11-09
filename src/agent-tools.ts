@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { constants as fsConstants, promises as fs, type BigIntStats } from 'fs';
+import { fstat, readFile as readDescriptor } from 'node:fs';
+import * as koffi from 'koffi';
+import { createHash } from 'crypto';
+import type { ResearchPolicy, SubagentBatchResult } from './subagent-types';
 import { ChatMessage, ChatTool } from './protocol';
 import { parseToolInput } from './tool-input';
 import { ApprovalMode } from './config';
@@ -20,6 +25,11 @@ export interface AgentToolResult {
   status: 'success' | 'error' | 'declined';
   command?: CommandResult;
   edit?: { path: string; saved: true; diagnostics?: DiagnosticObservation };
+  research?: SubagentBatchResult;
+  /** Host-only fingerprints; never included in tool messages sent to the model. */
+  researchSources?: Array<{ path: string; digest: string }>;
+  /** Host-only coverage warnings retained independently of model-visible output. */
+  researchLimitations?: string[];
 }
 
 export interface AgentToolOptions {
@@ -27,6 +37,7 @@ export interface AgentToolOptions {
   workspaceFolder?: vscode.WorkspaceFolder;
   approve?: (message: string, preview?: () => Promise<void>) => Promise<boolean>;
   approvalMode?: ApprovalMode;
+  researchPolicy?: ResearchPolicy;
 }
 
 interface FileChangeOutcome {
@@ -36,10 +47,19 @@ interface FileChangeOutcome {
   edit: NonNullable<AgentToolResult['edit']>;
 }
 
-type WorkspaceToolOutcome = string | FileChangeOutcome;
+type ResearchSource = NonNullable<AgentToolResult['researchSources']>[number];
+interface WorkspaceResearchOutcome {
+  content: string;
+  status: 'success';
+  researchSources?: ResearchSource[];
+  researchLimitations?: string[];
+  saved?: false;
+  edit?: never;
+}
+type WorkspaceToolOutcome = string | (FileChangeOutcome & { researchSources?: never; researchLimitations?: never }) | WorkspaceResearchOutcome;
 
-export function getAgentTools(): ChatTool[] {
-  return [
+export function getAgentTools(policy?: ResearchPolicy): ChatTool[] {
+  const tools: ChatTool[] = [
     {
       type: 'function',
       function: {
@@ -208,11 +228,15 @@ export function getAgentTools(): ChatTool[] {
       },
     },
   ];
+  return policy ? tools.filter(tool => researchToolAllowed(tool.function.name, policy)) : tools;
 }
 
 export async function invokeAgentTool(callId: string, name: string, rawArguments: string, options: AgentToolOptions = {}): Promise<AgentToolResult> {
   let outcome: WorkspaceToolOutcome | undefined;
   try {
+    if (options.researchPolicy && !researchToolAllowed(name, options.researchPolicy)) {
+      throw new Error(`Research policy does not permit tool: ${name}`);
+    }
     if (name !== 'run_command') options.signal?.throwIfAborted();
     const args = parseToolInput(rawArguments);
     if (options.approvalMode === 'ask') {
@@ -235,7 +259,9 @@ export async function invokeAgentTool(callId: string, name: string, rawArguments
     requireWorkspaceFolder(folder);
     return typeof outcome === 'string'
       ? result(callId, name, outcome)
-      : { ...result(callId, name, outcome.content, outcome.status), edit: outcome.edit };
+      : { ...result(callId, name, outcome.content, outcome.status), edit: outcome.edit,
+        ...(outcome.researchSources ? { researchSources: outcome.researchSources } : {}),
+        ...(outcome.researchLimitations ? { researchLimitations: outcome.researchLimitations } : {}) };
   } catch (error) {
     if (outcome && typeof outcome !== 'string' && outcome.saved) {
       return { ...result(callId, name, `${outcome.content}\nTask interrupted after saving: ${messageOf(error)}. The saved change remains; read the file before making further edits.`, 'error'), edit: outcome.edit };
@@ -245,6 +271,7 @@ export async function invokeAgentTool(callId: string, name: string, rawArguments
 }
 
 async function invokeWorkspaceTool(name: string, args: Record<string, unknown>, options: AgentToolOptions, folder: vscode.WorkspaceFolder): Promise<WorkspaceToolOutcome> {
+  if (options.researchPolicy) return invokeResearchTool(name, args, options, folder);
   switch (name) {
     case 'get_workspace_summary':
       return await getWorkspaceSummary(folder);
@@ -279,6 +306,367 @@ async function invokeWorkspaceTool(name: string, args: Record<string, unknown>, 
 
 function isActionTool(name: string): boolean {
   return ['write_file', 'create_file', 'replace_in_file', 'delete_file', 'run_command'].includes(name);
+}
+
+// This check is independent of approval mode and tool advertisement: a model can
+// submit arbitrary tool names directly, including names absent from its schema.
+function researchToolAllowed(name: string, policy: ResearchPolicy): boolean {
+  return ['read_file', 'search_workspace', 'list_workspace_files', 'get_diagnostics'].includes(name)
+    && policy.tools.some(tool => tool === name);
+}
+
+function researchPath(input: unknown): string {
+  if (typeof input !== 'string' || !input.trim() || input.includes('\0')
+    || path.isAbsolute(input) || path.win32.isAbsolute(input) || /[:*?{}[\]]/.test(input)) {
+    throw new Error('Research requires an explicit workspace-relative path.');
+  }
+  const parts = input.replace(/\\/g, '/').split('/');
+  if (parts.includes('..')) throw new Error('Research paths must not contain traversal.');
+  return parts.filter(part => part && part !== '.').join('/');
+}
+
+function containedPath(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+interface ResearchPathSnapshot {
+  target: string;
+  root: string;
+  entries: Array<{ path: string; stat: BigIntStats }>;
+}
+
+const descriptorRead = (fd: number, signal?: AbortSignal): Promise<Buffer> => new Promise((resolve, reject) => {
+  signal?.throwIfAborted();
+  // Wait for Node's callback, including on abort, before the caller closes fd.
+  readDescriptor(fd, { signal }, (error, bytes) => error ? reject(error) : resolve(bytes));
+});
+const descriptorStat = (fd: number): Promise<BigIntStats> => new Promise((resolve, reject) => {
+  fstat(fd, { bigint: true }, (error, stat) => error ? reject(error) : resolve(stat));
+});
+
+/**
+ * POSIX lacks a race-free path API in Node. Resolve each segment from an
+ * already-open directory descriptor so a rename, link, or junction cannot
+ * redirect a later segment lookup outside the trusted workspace directory.
+ */
+function posixDescriptorApi(): { openat: (parent: number, name: string, flags: number, mode: number) => number; close: (fd: number) => number } {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') {
+    throw new Error('Scoped research is unavailable on this platform because safe descriptor-relative reads are not supported.');
+  }
+  try {
+    const library = koffi.load(process.platform === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6');
+    return {
+      openat: library.func('int openat(int, const char *, int, int)') as (parent: number, name: string, flags: number, mode: number) => number,
+      close: library.func('int close(int)') as (fd: number) => number,
+    };
+  } catch {
+    throw new Error('Scoped research is unavailable because the native descriptor-relative filesystem API could not be loaded. No file content was read.');
+  }
+}
+
+class ResearchPathExcluded extends Error {}
+class ResearchWorkspaceAlias extends Error {}
+
+const researchLinkMessage = 'Research does not permit symbolic links in source or workspace paths. Open the canonical workspace directory directly.';
+
+function researchLinkError(current: string, root: string): Error {
+  return containedPath(current, root)
+    ? new ResearchWorkspaceAlias(researchLinkMessage) : new ResearchPathExcluded(researchLinkMessage);
+}
+
+/**
+ * The filesystem root is the only absolute path passed to openat. Pathname
+ * metadata is an expectation, never the authority for opening a descendant.
+ * Each identity is checked on the descriptor acquired from its held parent.
+ */
+async function withResearchDescriptor<T>(snapshot: ResearchPathSnapshot, options: AgentToolOptions,
+  capture: boolean, use: (fd: number) => Promise<T>): Promise<T> {
+  options.signal?.throwIfAborted();
+  const api = posixDescriptorApi();
+  const directoryFlags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  const fileFlags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK;
+  const volume = path.parse(snapshot.target).root;
+  let current = api.openat(process.platform === 'darwin' ? -2 : -100, volume, directoryFlags, 0); // AT_FDCWD
+  if (current < 0) throw new Error('Research filesystem root could not be opened safely.');
+  try {
+    const parts = ['', ...path.relative(volume, snapshot.target).split(path.sep).filter(Boolean)];
+    let resolved = volume;
+    for (let index = 0; index < parts.length; index++) {
+      options.signal?.throwIfAborted();
+      if (parts[index]) resolved = path.join(resolved, parts[index]);
+      const expected = capture ? await fs.lstat(resolved, { bigint: true }) : snapshot.entries[index]?.stat;
+      options.signal?.throwIfAborted();
+      if (!expected) throw new Error('Research cannot establish file identity for this path.');
+      if (expected.isSymbolicLink()) throw researchLinkError(resolved, snapshot.root);
+      if (index < parts.length - 1 && !expected.isDirectory()) {
+        throw new Error('Research cannot establish directory identity for this path.');
+      }
+      if (index > 0) {
+        const next = api.openat(current, parts[index], index === parts.length - 1 ? fileFlags : directoryFlags, 0);
+        if (next < 0) throw new Error('Research path changed or could not be opened during safe descriptor traversal; no file content was returned.');
+        const previous = current;
+        current = next;
+        api.close(previous);
+      }
+      const opened = await descriptorStat(current);
+      options.signal?.throwIfAborted();
+      if (!sameResearchIdentity(expected, opened) || (index < parts.length - 1 && !opened.isDirectory())) {
+        throw new Error('Research path changed during safe descriptor traversal; no file content was returned.');
+      }
+      if (capture) snapshot.entries.push({ path: resolved, stat: opened });
+    }
+    options.signal?.throwIfAborted();
+    return await use(current);
+  } finally {
+    api.close(current);
+  }
+}
+
+async function readPinnedResearchBytes(snapshot: ResearchPathSnapshot, options: AgentToolOptions): Promise<Buffer> {
+  return withResearchDescriptor(snapshot, options, false, async fd => {
+    const opened = await descriptorStat(fd);
+    const expected = snapshot.entries[snapshot.entries.length - 1].stat;
+    if (!sameResearchFile(expected, opened)) throw new Error('Research file changed before reading; no file content was returned.');
+    options.signal?.throwIfAborted();
+    const bytes = await descriptorRead(fd, options.signal);
+    options.signal?.throwIfAborted();
+    if (!sameResearchFile(opened, await descriptorStat(fd))) throw new Error('Research file changed while reading; no file content was returned.');
+    options.signal?.throwIfAborted();
+    return bytes;
+  });
+}
+
+function sameResearchIdentity(before: BigIntStats, after: BigIntStats): boolean {
+  // Numeric Stats lose precision for Windows file IDs. Missing identities fail closed.
+  return before.ino > 0n && after.ino > 0n && before.dev === after.dev && before.ino === after.ino
+    && before.mode === after.mode && before.birthtimeNs === after.birthtimeNs;
+}
+
+function sameResearchFile(before: BigIntStats, after: BigIntStats): boolean {
+  return sameResearchIdentity(before, after) && after.isFile() && before.size === after.size
+    && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs;
+}
+
+/** Metadata-only compatibility for Windows listing and diagnostics; never authorizes a read. */
+async function verifyResearchMetadata(snapshot: ResearchPathSnapshot, options: AgentToolOptions): Promise<void> {
+  for (const entry of snapshot.entries) {
+    options.signal?.throwIfAborted();
+    const current = await fs.lstat(entry.path, { bigint: true });
+    options.signal?.throwIfAborted();
+    if (current.isSymbolicLink()) throw researchLinkError(entry.path, snapshot.root);
+    if (!sameResearchIdentity(entry.stat, current)) {
+      throw new Error('Research path changed during access; no file content was returned.');
+    }
+  }
+  if (path.relative(snapshot.root, await fs.realpath(snapshot.root)) !== '') {
+    throw new ResearchWorkspaceAlias(researchLinkMessage);
+  }
+  if (path.relative(snapshot.target, await fs.realpath(snapshot.target)) !== '') {
+    throw new Error('Research path changed during access; no file content was returned.');
+  }
+  options.signal?.throwIfAborted();
+}
+
+/** Capture identities from the volume root, including ancestors above the workspace. */
+async function requireResearchPath(uri: vscode.Uri, folder: vscode.WorkspaceFolder, options: AgentToolOptions): Promise<ResearchPathSnapshot> {
+  options.signal?.throwIfAborted();
+  requireWorkspaceFolder(folder);
+  if (folder.uri.scheme !== 'file') {
+    throw new Error('Research cannot establish local workspace scope for this path.');
+  }
+  if (uri.scheme !== 'file' || !isInWorkspace(uri, folder)) throw new ResearchPathExcluded('Path is outside the research scope.');
+  const root = path.resolve(folder.uri.fsPath);
+  const target = path.resolve(uri.fsPath);
+  const scopes = options.researchPolicy!.paths.map(researchPath);
+  if (!containedPath(root, target) || !scopes.some(scope => containedPath(path.resolve(root, scope), target))) {
+    throw new ResearchPathExcluded('Path is outside the research scope.');
+  }
+  return captureResearchPath(root, target, folder, options);
+}
+
+async function captureResearchPath(root: string, target: string, folder: vscode.WorkspaceFolder, options: AgentToolOptions): Promise<ResearchPathSnapshot> {
+  const snapshot: ResearchPathSnapshot = { root, target, entries: [] };
+  if (process.platform === 'linux' || process.platform === 'darwin') {
+    await withResearchDescriptor(snapshot, options, true, async () => undefined);
+    requireWorkspaceFolder(folder);
+    return snapshot;
+  }
+  // Native scoped reads remain explicitly unsupported on Windows. Keep the
+  // existing metadata tools useful without silently canonicalizing aliases.
+  const volume = path.parse(target).root;
+  let current = volume;
+  for (const part of ['', ...path.relative(volume, target).split(path.sep).filter(Boolean)]) {
+    current = part ? path.join(current, part) : current;
+    const stat = await fs.lstat(current, { bigint: true });
+    options.signal?.throwIfAborted();
+    if (stat.isSymbolicLink()) throw researchLinkError(current, root);
+    if (stat.ino <= 0n || (!stat.isDirectory() && current !== target)) throw new Error('Research cannot establish file identity for this path.');
+    snapshot.entries.push({ path: current, stat });
+  }
+  await verifyResearchMetadata(snapshot, options);
+  requireWorkspaceFolder(folder);
+  return snapshot;
+}
+
+/** Pin the validated identity before reading through one descriptor, including freshness checks. */
+async function readResearchBytes(uri: vscode.Uri, folder: vscode.WorkspaceFolder, options: AgentToolOptions): Promise<Buffer> {
+  const snapshot = await requireResearchPath(uri, folder, options);
+  const expected = snapshot.entries[snapshot.entries.length - 1].stat;
+  if (!expected.isFile()) throw new Error('Research source is not a regular file.');
+  options.signal?.throwIfAborted();
+  return readPinnedResearchBytes(snapshot, options);
+}
+
+async function researchFiles(args: Record<string, unknown>, folder: vscode.WorkspaceFolder, options: AgentToolOptions, limit: number): Promise<{ files: vscode.Uri[]; limited: boolean; unavailable: number }> {
+  options.signal?.throwIfAborted();
+  // Validate the entire policy even when discovery returns no files.
+  options.researchPolicy!.paths.forEach(researchPath);
+  if (folder.uri.scheme !== 'file') throw new Error('Research requires a local workspace folder.');
+  // Validate workspace admission even when discovery has no candidates. A
+  // workspace alias is a configuration error, rather than a source exclusion.
+  requireWorkspaceFolder(folder);
+  const root = path.resolve(folder.uri.fsPath);
+  await captureResearchPath(root, root, folder, options);
+  options.signal?.throwIfAborted();
+  const cancellation = options.signal ? new vscode.CancellationTokenSource() : undefined;
+  const cancel = () => cancellation?.cancel();
+  options.signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const pattern = typeof args.pattern === 'string' && args.pattern.trim() ? args.pattern : '**/*';
+    const candidates = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, pattern), '**/{node_modules,.git,dist,out}/**', limit, cancellation?.token);
+    options.signal?.throwIfAborted();
+    const files: vscode.Uri[] = [];
+    let unavailable = 0;
+    for (const uri of candidates) {
+      options.signal?.throwIfAborted();
+      try {
+        await requireResearchPath(uri, folder, options);
+        files.push(uri);
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        if (error instanceof Error && error.name === 'AbortError') throw error;
+        if (error instanceof ResearchWorkspaceAlias) throw error;
+        // Policy exclusions are expected. A failed inspection of an assigned
+        // candidate instead leaves a gap in coverage, without exposing its path.
+        if (!(error instanceof ResearchPathExcluded)) unavailable++;
+      }
+    }
+    return { files, limited: candidates.length >= limit, unavailable };
+  } finally {
+    options.signal?.removeEventListener('abort', cancel);
+    cancellation?.dispose();
+  }
+}
+
+async function invokeResearchTool(name: string, args: Record<string, unknown>, options: AgentToolOptions, folder: vscode.WorkspaceFolder): Promise<WorkspaceToolOutcome> {
+  if (name === 'read_file') {
+    const relative = researchPath(args.path) || '.';
+    const uri = resolveWorkspacePath(relative, folder);
+    const bytes = await readResearchBytes(uri, folder, options);
+    const content = decodeFileText(bytes, workspaceRelativePath(uri, folder));
+    return { content: truncate(content, boundedNumber(args.maxChars, 30000, MAX_TEXT_CHARS)), status: 'success',
+      researchSources: [{ path: workspaceRelativePath(uri, folder), digest: researchDigest(bytes) }] };
+  }
+  const maxResults = boundedNumber(args.maxResults, name === 'list_workspace_files' ? 200 : 80, MAX_RESULT_COUNT);
+  if (name === 'list_workspace_files') {
+    const { files, limited, unavailable } = await researchFiles(args, folder, options, maxResults);
+    const content = files.map(file => workspaceRelativePath(file, folder)).join('\n')
+      || (limited || unavailable ? '(no files among inspected candidates)' : '(no files)');
+    const warnings = researchDiscoveryWarnings(maxResults, limited, unavailable);
+    if (!warnings.length) return content;
+    return { content: [...warnings, content].join('\n'), status: 'success', researchLimitations: warnings };
+  }
+  if (name === 'get_diagnostics') {
+    const target = typeof args.path === 'string' && args.path.trim()
+      ? resolveWorkspacePath(researchPath(args.path) || '.', folder) : undefined;
+    if (target) await requireResearchPath(target, folder, options);
+    const entries = target ? [[target, vscode.languages.getDiagnostics(target)] as const] : vscode.languages.getDiagnostics();
+    const lines: string[] = [];
+    for (const [uri, diagnostics] of entries) {
+      options.signal?.throwIfAborted();
+      if (lines.length >= maxResults) break;
+      try { await requireResearchPath(uri, folder, options); } catch {
+        options.signal?.throwIfAborted();
+        continue;
+      }
+      for (const diagnostic of diagnostics) {
+        options.signal?.throwIfAborted();
+        if (lines.length >= maxResults) break;
+        lines.push(`${workspaceRelativePath(uri, folder)}:${diagnostic.range.start.line + 1}:${diagnostic.range.start.character + 1}: ${vscode.DiagnosticSeverity[diagnostic.severity]}: ${diagnostic.message}`);
+      }
+    }
+    return lines.join('\n') || '(no diagnostics)';
+  }
+  const query = String(args.query ?? '').trim();
+  if (!query) throw new Error('query is required.');
+  const { files, limited, unavailable } = await researchFiles({}, folder, options, 500);
+  const hits: string[] = [];
+  const sources: ResearchSource[] = [];
+  let skipped = 0;
+  for (const file of files) {
+    options.signal?.throwIfAborted();
+    if (hits.length >= maxResults) break;
+    let text: string;
+    try {
+      const bytes = await readResearchBytes(file, folder, options);
+      options.signal?.throwIfAborted();
+      text = decodeFileText(bytes, workspaceRelativePath(file, folder));
+      sources.push({ path: workspaceRelativePath(file, folder), digest: researchDigest(bytes) });
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      if (error instanceof ResearchWorkspaceAlias) throw error;
+      if (!(error instanceof ResearchPathExcluded)) skipped++;
+      continue;
+    }
+    const lines = text.split(/\r?\n/);
+    for (let index = 0; index < lines.length && hits.length < maxResults; index++) {
+      options.signal?.throwIfAborted();
+      if (lines[index].includes(query)) hits.push(`${workspaceRelativePath(file, folder)}:${index + 1}: ${lines[index].trim()}`);
+    }
+  }
+  const content = hits.join('\n') || (limited || unavailable || skipped ? '(no matches among inspected candidates)' : '(no matches)');
+  const warnings = [
+    ...researchDiscoveryWarnings(500, limited, unavailable),
+    ...(skipped ? [`Skipped ${skipped} research source(s) that could not be read safely as UTF-8 text; search coverage is incomplete.`] : []),
+  ];
+  return { content: truncate([...warnings, content].join('\n'), MAX_TEXT_CHARS), status: 'success', researchSources: sources,
+    ...(warnings.length ? { researchLimitations: warnings } : {}) };
+}
+
+function researchDiscoveryWarnings(limit: number, limited: boolean, unavailable: number): string[] {
+  return [
+    ...(limited ? [`Discovery inspected only the first ${limit} workspace candidates; scoped files may be unscanned.`] : []),
+    ...(unavailable ? [`${unavailable} assigned research candidate(s) could not be inspected safely; discovery coverage is incomplete.`] : []),
+  ];
+}
+
+function researchDigest(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** Revalidate previously observed file evidence without invoking model tools or approvals. */
+export async function verifyResearchSources(sources: readonly ResearchSource[], options: {
+  signal?: AbortSignal;
+  workspaceFolder?: vscode.WorkspaceFolder;
+  researchPolicy: ResearchPolicy;
+}): Promise<void> {
+  options.signal?.throwIfAborted();
+  if (sources.length > MAX_RESULT_COUNT) throw new Error('Research evidence changed or cannot be verified.');
+  const folder = requireWorkspaceFolder(options.workspaceFolder);
+  for (const source of sources) {
+    options.signal?.throwIfAborted();
+    try {
+      const target = resolveWorkspacePath(researchPath(source.path) || '.', folder);
+      const bytes = await readResearchBytes(target, folder, options);
+      options.signal?.throwIfAborted();
+      if (researchDigest(bytes) !== source.digest) throw new Error('Fingerprint mismatch.');
+    } catch {
+      options.signal?.throwIfAborted();
+      throw new Error('Research evidence changed or cannot be verified.');
+    }
+  }
 }
 
 function needsApproval(name: string, args: Record<string, unknown>, mode: ApprovalMode | undefined): boolean {
@@ -486,10 +874,8 @@ async function listWorkspaceFiles(args: Record<string, unknown>, folder: vscode.
   return files.map((file) => workspaceRelativePath(file, folder)).join('\n') || '(no files)';
 }
 
-async function readFile(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): Promise<string> {
-  const uri = resolveWorkspacePath(args.path, folder);
-  const bytes = await vscode.workspace.fs.readFile(uri);
-  const unsupportedMessage = `Cannot read ${workspaceRelativePath(uri, folder)}: binary or unsupported file (expected UTF-8 text).`;
+function decodeFileText(bytes: Uint8Array, relative: string): string {
+  const unsupportedMessage = `Cannot read ${relative}: binary or unsupported file (expected UTF-8 text).`;
   if (bytes.includes(0)) {
     throw new Error(unsupportedMessage);
   }
@@ -499,7 +885,13 @@ async function readFile(args: Record<string, unknown>, folder: vscode.WorkspaceF
   } catch {
     throw new Error(unsupportedMessage);
   }
-  return truncate(text, boundedNumber(args.maxChars, 30000, MAX_TEXT_CHARS));
+  return text;
+}
+
+async function readFile(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): Promise<string> {
+  const uri = resolveWorkspacePath(args.path, folder);
+  const bytes = await vscode.workspace.fs.readFile(uri);
+  return truncate(decodeFileText(bytes, workspaceRelativePath(uri, folder)), boundedNumber(args.maxChars, 30000, MAX_TEXT_CHARS));
 }
 
 async function searchWorkspace(args: Record<string, unknown>, folder: vscode.WorkspaceFolder): Promise<string> {

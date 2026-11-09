@@ -7,7 +7,7 @@ const { buildSync } = require('esbuild');
 const repository = path.join(__dirname, '../..');
 const outfile = path.join(repository, 'out/project-verification-host.cjs');
 buildSync({ stdin: { contents: "export { invokeAgentTool } from './src/agent-tools'; export { TaskEvidence } from './src/task-evidence';", resolveDir: repository },
-  bundle: true, platform: 'node', format: 'cjs', external: ['vscode'], outfile });
+  bundle: true, platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile });
 const { invokeAgentTool, TaskEvidence } = require(outfile);
 
 suite('Project verification with real metadata and processes', () => {

@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const nativeFs = require('node:fs');
+const koffi = require('koffi');
 const os = require('node:os');
 const path = require('node:path');
 const vscode = require('vscode');
@@ -14,8 +16,37 @@ async function assertSameDirectory(actual, expected) {
 
 // Exercise the actual source against VS Code's real filesystem, edits and URIs.
 buildSync({ entryPoints: [path.join(__dirname, '../../src/agent-tools.ts')], bundle: true,
-  platform: 'node', format: 'cjs', external: ['vscode'], outfile: path.join(__dirname, '../../out/workspace-tools.cjs') });
-const { invokeAgentTool, toolResultsToMessages } = require('../../out/workspace-tools.cjs');
+  platform: 'node', format: 'cjs', external: ['vscode', 'koffi'], outfile: path.join(__dirname, '../../out/workspace-tools.cjs') });
+const { invokeAgentTool, toolResultsToMessages, verifyResearchSources } = require('../../out/workspace-tools.cjs');
+buildSync({ entryPoints: [path.join(__dirname, '../../src/subagent-runner.ts')], bundle: true,
+  platform: 'node', format: 'cjs', outfile: path.join(__dirname, '../../out/workspace-subagent.cjs') });
+const { runSubagent } = require('../../out/workspace-subagent.cjs');
+
+function researchChild(folder, tool, args, controller = new AbortController(), calls) {
+  const requests = [], results = [], pending = [];
+  const task = { title: 'Inspect fixture', objective: 'Inspect assigned sources', context: '', paths: ['src'], tools: [tool] };
+  const toolCall = (name, value, id) => ({ id, type: 'function', function: { name, arguments: JSON.stringify(value) } });
+  const options = {
+    requestId: 'fixture-parent', model: 'fixture', signal: controller.signal,
+    limits: { maxTurns: 2, maxOutputTokens: 8192 }, maxOutputTokens: 2048,
+    stream: async function* (_id, request) {
+      requests.push(structuredClone(request));
+      const turnCalls = requests.length === 1 ? calls || [toolCall(tool, args, 'source')]
+        : [toolCall('submit_research', { findings: [], limitations: [] }, 'submission')];
+      for (const value of turnCalls) yield { kind: 'toolCall', value };
+    },
+    invoke: (_task, call, signal) => {
+      const operation = invokeAgentTool(call.id, call.function.name, call.function.arguments,
+        { workspaceFolder: folder, approvalMode: 'full', signal, researchPolicy: task })
+        .then(result => { results.push(result); return result; });
+      pending.push(operation);
+      return operation;
+    },
+    cancel() {}, reserve() {}, onActivity() {},
+  };
+  return { requests, results, pending, run: () => runSubagent({ id: 'fixture-child', task,
+    signal: controller.signal, options, reserveOutput: value => value }) };
+}
 
 suite('Agent workspace selection with real files', () => {
   let temporary, roots, folders, originalCount;
@@ -31,7 +62,7 @@ suite('Agent workspace selection with real files', () => {
   }
 
   suiteSetup(async () => {
-    temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'deeplocal-workspaces-'));
+    temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'deeplocal-workspaces-')));
     roots = ['one', 'two'].map(name => vscode.Uri.file(path.join(temporary, name)));
     for (const [index, uri] of roots.entries()) {
       await fs.mkdir(uri.fsPath);
@@ -242,6 +273,392 @@ suite('Agent workspace selection with real files', () => {
     })).status, 'declined');
     assert.equal(await fs.readFile(path.join(roots[1].fsPath, 'same.txt'), 'utf8'), 'root-1');
   });
+
+  test('research stays scoped and read-only under full access and verifies observed bytes', async () => {
+    const researchPolicy = { tools: ['read_file', 'search_workspace', 'list_workspace_files'], paths: ['same.txt'] };
+    const options = { approvalMode: 'full', researchPolicy, workspaceFolder: folders[1] };
+    if (process.platform !== 'linux' && process.platform !== 'darwin') {
+      const originalReadFile = nativeFs.readFile;
+      const originalLoad = koffi.load;
+      let descriptorReads = 0, nativeLoads = 0;
+      try {
+        nativeFs.readFile = function (file, ...args) {
+          if (typeof file === 'number') descriptorReads++;
+          return originalReadFile.call(this, file, ...args);
+        };
+        koffi.load = function (...args) { nativeLoads++; return originalLoad.apply(this, args); };
+        const read = await call('read_file', { path: 'same.txt' }, folders[1], options);
+        assert.equal(read.status, 'error');
+        assert.match(read.content, /Scoped research is unavailable on this platform/);
+        assert.doesNotMatch(read.content, /root-1/);
+        assert.deepEqual(read.researchSources || [], []);
+        const search = await call('search_workspace', { query: 'root-' }, folders[1], options);
+        assert.equal(search.status, 'success', search.content);
+        assert.match(search.content, /coverage is incomplete/);
+        assert.doesNotMatch(search.content, /root-1/);
+        assert.deepEqual(search.researchSources || [], []);
+        assert.equal(descriptorReads, 0, 'unsupported research must not read any descriptor');
+        assert.equal(nativeLoads, 0, 'unsupported research must reject before loading a native library');
+        assert.equal((await call('read_file', { path: 'package.json' }, folders[1], options)).status, 'error');
+        for (const name of ['write_file', 'delete_file', 'run_command']) {
+          assert.equal((await call(name, { path: 'same.txt', content: 'forbidden', command: process.execPath, args: ['-e', 'process.exit(1)'] }, folders[1], options)).status, 'error');
+        }
+        assert.equal((await call('list_workspace_files', {}, folders[1], options)).content, 'same.txt');
+        assert.equal(await fs.readFile(path.join(roots[1].fsPath, 'same.txt'), 'utf8'), 'root-1');
+      } finally {
+        nativeFs.readFile = originalReadFile;
+        koffi.load = originalLoad;
+      }
+      return;
+    }
+    const read = await call('read_file', { path: 'same.txt' }, folders[1], options);
+    assert.equal(read.status, 'success');
+    assert.equal(read.content, 'root-1');
+    await verifyResearchSources(read.researchSources, options);
+    assert.equal((await call('read_file', { path: 'package.json' }, folders[1], options)).status, 'error');
+    for (const name of ['write_file', 'delete_file', 'run_command']) {
+      assert.equal((await call(name, { path: 'same.txt', content: 'forbidden', command: process.execPath, args: ['-e', 'process.exit(1)'] }, folders[1], options)).status, 'error');
+    }
+    assert.equal(await fs.readFile(path.join(roots[1].fsPath, 'same.txt'), 'utf8'), 'root-1');
+    const listing = await call('list_workspace_files', {}, folders[1], options);
+    assert.equal(listing.content, 'same.txt');
+    const search = await call('search_workspace', { query: 'root-' }, folders[1], options);
+    assert.match(search.content, /same.txt:1: root-1/);
+    assert.doesNotMatch(search.content, /root-0/);
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(roots[1], 'same.txt'));
+    const change = new vscode.WorkspaceEdit();
+    change.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), 'changed after research');
+    assert.equal(await vscode.workspace.applyEdit(change), true);
+    assert.equal(await document.save(), true);
+    await assert.rejects(verifyResearchSources(read.researchSources, options), /Research evidence changed/);
+    const controller = new AbortController();
+    controller.abort();
+    assert.equal((await call('search_workspace', { query: 'root-' }, folders[1], { ...options, signal: controller.signal })).status, 'error');
+  });
+
+  for (const name of ['read_file', 'search_workspace']) {
+    for (const replacement of ['hardlink', 'junction']) {
+      test(`research ${name} rejects an outside ${replacement} substitution even after the validated path is restored`, async function () {
+        if (process.platform !== 'linux' && process.platform !== 'darwin') { this.skip(); return; }
+        const prefix = `research-open-race-${name}-${replacement}`;
+        const insideDirectory = path.join(roots[1].fsPath, prefix);
+        const parkedDirectory = path.join(roots[1].fsPath, `${prefix}-parked`);
+        const outsideDirectory = path.join(roots[0].fsPath, prefix);
+        const target = path.join(insideDirectory, 'source.txt');
+        const parkedFile = path.join(insideDirectory, 'source-original.txt');
+        const outsideFile = path.join(outsideDirectory, 'source.txt');
+        const sentinel = `OUTSIDE_RESEARCH_SENTINEL_${name}_${replacement}`;
+        await fs.mkdir(insideDirectory);
+        await fs.mkdir(outsideDirectory);
+        await fs.writeFile(target, 'allowed research source');
+        await fs.writeFile(outsideFile, sentinel);
+        const originalLoad = koffi.load;
+        const originalReadFile = nativeFs.readFile;
+        const descriptors = new Map();
+        let intercepted = 0, readCalls = 0, closeCalls = 0;
+        let parked = false, linked = false, openedDescriptor, openedLifetime, traversalLifetime, nativeClose;
+        function restoreTarget() {
+          if (linked) {
+            // Unlink the directory symlink itself, never its target.
+            nativeFs.unlinkSync(replacement === 'hardlink' ? target : insideDirectory);
+            linked = false;
+          }
+          if (parked) {
+            nativeFs.renameSync(replacement === 'hardlink' ? parkedFile : parkedDirectory,
+              replacement === 'hardlink' ? target : insideDirectory);
+            parked = false;
+          }
+        }
+        try {
+          nativeFs.readFile = function (file, ...args) {
+            if (typeof file === 'number' && descriptors.has(file)) readCalls++;
+            return originalReadFile.call(this, file, ...args);
+          };
+          koffi.load = function (...loadArgs) {
+            const library = originalLoad.apply(this, loadArgs);
+            return {
+              func(signature) {
+                const native = library.func(signature);
+                if (signature === 'int close(int)') {
+                  nativeClose = native;
+                  return fd => {
+                    if (descriptors.get(fd) === (replacement === 'hardlink' ? openedLifetime : traversalLifetime)) closeCalls++;
+                    const result = native(fd);
+                    if (result === 0) descriptors.delete(fd);
+                    return result;
+                  };
+                }
+                if (signature !== 'int openat(int, const char *, int, int)') return native;
+                return (parent, file, flags, mode) => {
+                  const interceptedName = replacement === 'hardlink' ? 'source.txt' : prefix;
+                  if (file !== interceptedName) {
+                    const fd = native(parent, file, flags, mode);
+                    if (fd >= 0) descriptors.set(fd, {});
+                    return fd;
+                  }
+                  assert.equal(++intercepted, 1, 'intercept exactly the scoped native openat');
+                  traversalLifetime = descriptors.get(parent);
+                  assert.ok(traversalLifetime, 'parent must have a live owned descriptor');
+                  // Path checks are complete. Restore the approved names before
+                  // returning from openat so subsequent validation sees them.
+                  try {
+                    nativeFs.renameSync(replacement === 'hardlink' ? target : insideDirectory,
+                      replacement === 'hardlink' ? parkedFile : parkedDirectory);
+                    parked = true;
+                    if (replacement === 'hardlink') nativeFs.linkSync(outsideFile, target);
+                    else nativeFs.symlinkSync(outsideDirectory, insideDirectory, 'dir');
+                    linked = true;
+                    openedDescriptor = native(parent, file, flags, mode);
+                    if (openedDescriptor >= 0) {
+                      openedLifetime = {};
+                      descriptors.set(openedDescriptor, openedLifetime);
+                    }
+                    if (replacement === 'hardlink') {
+                      assert.ok(openedDescriptor >= 0, 'native openat must open a real descriptor');
+                      const actual = nativeFs.fstatSync(openedDescriptor, { bigint: true });
+                      const outside = nativeFs.statSync(outsideFile, { bigint: true });
+                      assert.equal(actual.dev, outside.dev, 'fixture must open the sibling workspace object');
+                      assert.equal(actual.ino, outside.ino, 'fixture must open the sibling workspace object');
+                    } else {
+                      assert.ok(flags & nativeFs.constants.O_NOFOLLOW, 'directory traversal must forbid symlinks');
+                      assert.equal(openedDescriptor, -1, 'native openat must reject the substituted directory symlink');
+                    }
+                  } finally { restoreTarget(); }
+                  assert.equal(nativeFs.readFileSync(target, 'utf8'), 'allowed research source',
+                    'approved path is restored before validation resumes');
+                  return openedDescriptor;
+                };
+              },
+            };
+          };
+          const result = await call(name, name === 'read_file' ? { path: `${prefix}/source.txt` } : { query: 'OUTSIDE_RESEARCH_SENTINEL' }, folders[1], {
+            approvalMode: 'full', researchPolicy: { tools: [name], paths: [prefix] },
+          });
+          assert.equal(intercepted, 1, 'exercise the actual production native openat path');
+          assert.equal(readCalls, 0, 'outside descriptor must be rejected before reading any bytes');
+          assert.equal(closeCalls, 1, replacement === 'hardlink'
+            ? 'rejected outside descriptor must be closed' : 'directory descriptor must close after traversal rejection');
+          assert.equal(descriptors.size, 0, 'all native descriptors must be closed');
+          assert.doesNotMatch(result.content, /OUTSIDE_RESEARCH_SENTINEL/);
+          assert.deepEqual(result.researchSources || [], [], 'wrong descriptor must never produce a source fingerprint');
+          if (name === 'read_file') assert.equal(result.status, 'error', result.content);
+          else {
+            assert.equal(result.status, 'success', result.content);
+            assert.match(result.content, /coverage is incomplete/);
+          }
+        } finally {
+          koffi.load = originalLoad;
+          nativeFs.readFile = originalReadFile;
+          if (nativeClose) for (const fd of descriptors.keys()) nativeClose(fd);
+          restoreTarget();
+          // These exact fixture directories are the only recursive cleanup targets.
+          assert.equal(path.dirname(path.resolve(insideDirectory)), path.resolve(roots[1].fsPath));
+          assert.equal(path.dirname(path.resolve(outsideDirectory)), path.resolve(roots[0].fsPath));
+          await fs.rm(insideDirectory, { recursive: true, force: true });
+          await fs.rm(outsideDirectory, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  for (const tool of ['read_file', 'search_workspace']) {
+    for (const admission of ['poisoned-metadata', 'ancestor-open', 'workspace-open']) {
+      test(`research ${tool} rejects ${admission} with unchanged directory timestamps before child continuation`, async function () {
+        if (process.platform !== 'linux' && process.platform !== 'darwin') { this.skip(); return; }
+        const fixture = path.join(temporary, `admission-${tool}-${admission}`);
+        const admitted = path.join(fixture, 'admitted'), parked = path.join(fixture, 'parked');
+        const excluded = path.join(fixture, 'excluded'), workspace = path.join(admitted, 'workspace');
+        const source = path.join(workspace, 'src/source.txt');
+        const sentinel = 'EXCLUDED_ADMISSION_SENTINEL';
+        await fs.mkdir(path.dirname(source), { recursive: true });
+        await fs.mkdir(path.join(excluded, 'workspace/src'), { recursive: true });
+        await fs.writeFile(source, 'allowed source');
+        await fs.writeFile(path.join(excluded, 'workspace/src/source.txt'), sentinel);
+        const index = vscode.workspace.workspaceFolders.length;
+        await changeFolders(index, 0, { uri: vscode.Uri.file(workspace), name: 'admission' });
+        const folder = vscode.workspace.workspaceFolders[index];
+        const originalLstat = fs.lstat, originalLoad = koffi.load, originalRead = nativeFs.readFile;
+        const times = new Map(), live = new Map();
+        let substitutions = 0, frozenStats = 0, reads = 0, nativeClose;
+        function substitute(operation) {
+          substitutions++;
+          const victim = admission === 'workspace-open' ? workspace : admitted;
+          const destination = admission === 'workspace-open' ? path.join(excluded, 'workspace') : excluded;
+          nativeFs.renameSync(victim, parked);
+          nativeFs.symlinkSync(destination, victim, 'dir');
+          try { return operation(); }
+          finally { nativeFs.unlinkSync(victim); nativeFs.renameSync(parked, victim); }
+        }
+        try {
+          fs.lstat = async function (target, options) {
+            const name = String(target);
+            const stat = admission === 'poisoned-metadata' && (name === workspace || name.startsWith(workspace + path.sep))
+              ? substitute(() => nativeFs.lstatSync(target, options)) : await originalLstat.call(this, target, options);
+            if (stat.isDirectory() && typeof stat.ctimeNs === 'bigint') {
+              const before = times.get(name) || { ctimeNs: stat.ctimeNs, mtimeNs: stat.mtimeNs };
+              times.set(name, before);
+              Object.assign(stat, before);
+              frozenStats++;
+            }
+            return stat;
+          };
+          nativeFs.readFile = function (file, ...args) {
+            if (typeof file === 'number' && live.has(file)) reads++;
+            return originalRead.call(this, file, ...args);
+          };
+          koffi.load = function (...args) {
+            const library = originalLoad.apply(this, args);
+            return { func(signature) {
+              const native = library.func(signature);
+              if (signature === 'int close(int)') {
+                nativeClose = native;
+                return fd => {
+                  assert.ok(live.has(fd), 'close must own the current descriptor lifetime');
+                  const result = native(fd);
+                  assert.equal(result, 0);
+                  live.delete(fd);
+                  return result;
+                };
+              }
+              if (signature !== 'int openat(int, const char *, int, int)') return native;
+              return (parent, name, flags, mode) => {
+                const intercept = admission === 'ancestor-open' ? name === 'admitted'
+                  : admission === 'workspace-open' ? name === 'workspace' : name === workspace;
+                // The absolute-path branch exercises the previously unsafe implementation too.
+                const fd = intercept ? substitute(() => native(parent, name, flags, mode)) : native(parent, name, flags, mode);
+                if (fd >= 0) {
+                  assert.ok(!live.has(fd), 'fd reuse must begin a new owned lifetime');
+                  live.set(fd, {});
+                }
+                return fd;
+              };
+            } };
+          };
+          const child = researchChild(folder, tool, tool === 'read_file' ? { path: 'src/source.txt' } : { query: sentinel });
+          const result = await child.run();
+          assert.ok(substitutions > 0, 'exercise the real filesystem substitution');
+          assert.ok(frozenStats > 0, 'exercise metadata observations with held directory timestamps');
+          assert.equal(reads, 0, 'reject admission before reading any content');
+          assert.equal(live.size, 0, 'all acquired native descriptor lifetimes must close');
+          assert.equal(child.requests.length, 2, 'inspect the actual next child-model request');
+          const forwarded = child.requests[1].messages.filter(message => message.role === 'tool');
+          assert.equal(forwarded.length, 1);
+          assert.doesNotMatch(JSON.stringify(forwarded), new RegExp(sentinel));
+          assert.deepEqual(child.results[0].researchSources || [], []);
+          assert.deepEqual(result.findings, []);
+          assert.equal(result.state, 'completed');
+          assert.equal(nativeFs.readFileSync(source, 'utf8'), 'allowed source');
+        } finally {
+          fs.lstat = originalLstat;
+          koffi.load = originalLoad;
+          nativeFs.readFile = originalRead;
+          if (nativeClose) for (const fd of live.keys()) nativeClose(fd);
+          await changeFolders(index, 1);
+          assert.equal(path.dirname(path.resolve(fixture)), path.resolve(temporary));
+          await fs.rm(fixture, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  test('research rejects a workspace alias and directs users to its canonical directory', async function () {
+    if (process.platform !== 'linux' && process.platform !== 'darwin') { this.skip(); return; }
+    const alias = path.join(temporary, 'research-alias');
+    await fs.symlink(roots[1].fsPath, alias, 'dir');
+    const index = vscode.workspace.workspaceFolders.length;
+    await changeFolders(index, 0, { uri: vscode.Uri.file(alias), name: 'alias' });
+    try {
+      const result = await call('read_file', { path: 'same.txt' }, vscode.workspace.workspaceFolders[index],
+        { researchPolicy: { tools: ['read_file'], paths: ['same.txt'] } });
+      assert.equal(result.status, 'error');
+      assert.match(result.content, /symbolic links/i);
+      assert.match(result.content, /canonical workspace directory/i);
+      assert.deepEqual(result.researchSources || [], []);
+    } finally { await changeFolders(index, 1); await fs.unlink(alias); }
+  });
+
+  for (const tool of ['read_file', 'search_workspace']) {
+    test(`research ${tool} aborts the actual descriptor read before another source or evidence`, async function () {
+      if (process.platform !== 'linux' && process.platform !== 'darwin') { this.skip(); return; }
+      const fixture = path.join(temporary, `cancel-${tool}`);
+      const sourceBytes = 2 * 1024 * 1024;
+      await fs.mkdir(path.join(fixture, 'src'), { recursive: true });
+      await fs.writeFile(path.join(fixture, 'src/a.txt'), Buffer.alloc(sourceBytes, 65));
+      await fs.writeFile(path.join(fixture, 'src/b.txt'), 'second source must not be read');
+      const index = vscode.workspace.workspaceFolders.length;
+      await changeFolders(index, 0, { uri: vscode.Uri.file(fixture), name: 'cancel' });
+      const folder = vscode.workspace.workspaceFolders[index], controller = new AbortController();
+      const originalRead = nativeFs.readFile, originalLoad = koffi.load;
+      const live = new Map();
+      let reads = 0, callbacks = 0, abortCode, callbackAborted = false, bytesAfterAbort = 0, readLifetime, nativeClose;
+      try {
+        koffi.load = function (...args) {
+          const library = originalLoad.apply(this, args);
+          return { func(signature) {
+            const native = library.func(signature);
+            if (signature === 'int close(int)') {
+              nativeClose = native;
+              return fd => {
+                const lifetime = live.get(fd);
+                assert.ok(lifetime, 'close must own a live descriptor');
+                if (lifetime === readLifetime) assert.equal(callbacks, 1, 'read callback must settle before close');
+                const result = native(fd);
+                assert.equal(result, 0);
+                live.delete(fd);
+                return result;
+              };
+            }
+            if (signature !== 'int openat(int, const char *, int, int)') return native;
+            return (...openArgs) => {
+              const fd = native(...openArgs);
+              if (fd >= 0) { assert.ok(!live.has(fd)); live.set(fd, {}); }
+              return fd;
+            };
+          } };
+        };
+        nativeFs.readFile = function (file, ...args) {
+          if (typeof file !== 'number' || !live.has(file)) return originalRead.call(this, file, ...args);
+          reads++;
+          readLifetime = live.get(file);
+          const callback = args.pop();
+          assert.equal(args[0]?.signal, controller.signal, 'pass Stop signal into Node descriptor read');
+          const result = originalRead.call(this, file, ...args, (error, bytes) => {
+            callbacks++;
+            abortCode = error?.code;
+            callbackAborted = controller.signal.aborted;
+            if (controller.signal.aborted && bytes) bytesAfterAbort += bytes.length;
+            callback(error, bytes);
+          });
+          controller.abort(new Error('Fixture Stop'));
+          return result;
+        };
+        const calls = tool === 'read_file' ? ['a', 'b'].map(name => ({ id: name, type: 'function',
+          function: { name: tool, arguments: JSON.stringify({ path: `src/${name}.txt` }) } })) : undefined;
+        const child = researchChild(folder, tool, tool === 'read_file' ? { path: 'src/a.txt' } : { query: 'A' }, controller, calls);
+        const result = await child.run();
+        await Promise.all(child.pending); // Child cancellation may beat native cleanup.
+        assert.equal(reads, 1, 'no subsequent source starts reading');
+        assert.equal(callbacks, 1, 'exercise the actual asynchronous read callback');
+        assert.equal(callbackAborted, true, 'actual read callback must observe the aborted signal');
+        // Some Node versions drop AbortError for caller-owned numeric fds.
+        // In either case the actual read must stop buffering the assigned file.
+        assert.ok(abortCode === undefined || abortCode === 'ABORT_ERR', `unexpected read error: ${abortCode}`);
+        assert.ok(bytesAfterAbort < sourceBytes, 'abort must stop buffering before the complete source is read');
+        assert.equal(live.size, 0);
+        assert.equal(child.requests.length, 1, 'cancelled content never reaches another model request');
+        assert.equal(result.state, 'cancelled');
+        assert.deepEqual(result.findings, []);
+        for (const outcome of child.results) assert.deepEqual(outcome.researchSources || [], []);
+      } finally {
+        nativeFs.readFile = originalRead;
+        koffi.load = originalLoad;
+        if (nativeClose) for (const fd of live.keys()) nativeClose(fd);
+        await changeFolders(index, 1);
+        assert.equal(path.dirname(path.resolve(fixture)), path.resolve(temporary));
+        await fs.rm(fixture, { recursive: true, force: true });
+      }
+    });
+  }
 
   test('a removed folder during approval blocks writes and future invocations', async () => {
     const result = await call('write_file', { path: 'same.txt', content: 'removed' }, folders[1], {
