@@ -6,4 +6,3 @@ out/
 .env
 test-results/
 playwright-report/
-docs/
