@@ -3,7 +3,7 @@
   "name": "deeplocal-chat-adapter",
   "displayName": "deeplocal-chat-adapter",
   "description": "Connect DeepLocal OpenAI-compatible models to VS Code.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "petertzy",
   "private": true,
   "license": "MIT",
@@ -63,15 +63,30 @@
       "title": "deeplocal-chat-adapter",
       "properties": {
         "deeplocal.apiMode": {
-          "type": "string", "enum": ["chat-completions", "responses"], "default": "chat-completions",
+          "type": "string",
+          "enum": [
+            "chat-completions",
+            "responses"
+          ],
+          "default": "chat-completions",
           "description": "Local API protocol. Select responses only when the service supports the Responses API."
         },
         "deeplocal.remote.apiMode": {
-          "type": "string", "enum": ["chat-completions", "responses"], "default": "chat-completions",
+          "type": "string",
+          "enum": [
+            "chat-completions",
+            "responses"
+          ],
+          "default": "chat-completions",
           "description": "Remote API protocol. Responses enables provider reasoning summaries and requires a compatible endpoint/model."
         },
         "deeplocal.reasoningSummary": {
-          "type": "string", "enum": ["auto", "off"], "default": "auto",
+          "type": "string",
+          "enum": [
+            "auto",
+            "off"
+          ],
+          "default": "auto",
           "description": "Request reasoning summaries in Responses mode. Turn off for models without summary support."
         },
         "deeplocal.baseUrl": {
@@ -79,9 +94,30 @@
           "default": "http://127.0.0.1:14567/v1",
           "description": "DeepLocal OpenAI-compatible API base URL."
         },
-        "deeplocal.backend": { "type": "string", "enum": ["local", "remote"], "enumDescriptions": ["Use the local DeepLocal service.", "Use the configured remote OpenAI-compatible API. Remote calls may incur provider charges."], "default": "local", "scope": "application", "description": "Select which service the DeepLocal / OpenAI-compatible provider uses." },
-        "deeplocal.remote.baseUrl": { "type": "string", "default": "https://api.openai.com/v1", "description": "Remote OpenAI-compatible API base URL." },
-        "deeplocal.remote.model": { "type": "string", "default": "gpt-4.1-mini", "description": "Remote model ID. Used directly if model discovery is unavailable." },
+        "deeplocal.backend": {
+          "type": "string",
+          "enum": [
+            "local",
+            "remote"
+          ],
+          "enumDescriptions": [
+            "Use the local DeepLocal service.",
+            "Use the configured remote OpenAI-compatible API. Remote calls may incur provider charges."
+          ],
+          "default": "local",
+          "scope": "application",
+          "description": "Select which service the DeepLocal / OpenAI-compatible provider uses."
+        },
+        "deeplocal.remote.baseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "Remote OpenAI-compatible API base URL."
+        },
+        "deeplocal.remote.model": {
+          "type": "string",
+          "default": "gpt-4.1-mini",
+          "description": "Remote model ID. Used directly if model discovery is unavailable."
+        },
         "deeplocal.apiKey": {
           "type": "string",
           "default": "",
@@ -129,7 +165,15 @@
           "scope": "resource",
           "default": [],
           "uniqueItems": true,
-          "items": { "type": "string", "enum": ["lint", "typecheck", "build", "test"] },
+          "items": {
+            "type": "string",
+            "enum": [
+              "lint",
+              "typecheck",
+              "build",
+              "test"
+            ]
+          },
           "description": "Preferred verification categories for Agent tasks. Empty automatically selects available project checks; a non-empty list limits suggested checks to the selected categories."
         },
         "deeplocal.agentMaxRepairIterations": {
@@ -141,7 +185,12 @@
         },
         "deeplocal.approvalMode": {
           "type": "string",
-          "enum": ["every", "safe", "full", "ask"],
+          "enum": [
+            "every",
+            "safe",
+            "full",
+            "ask"
+          ],
           "enumDescriptions": [
             "Ask before every agent tool call.",
             "Run safe operations automatically and ask before risky operations.",
