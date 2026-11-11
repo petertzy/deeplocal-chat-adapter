@@ -546,7 +546,7 @@ it('does not certify an omitted failed check or a fabricated cross-task referenc
     await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(2));
     const report = JSON.parse(harness.sent.filter(message => message.type === 'assistantFinal').at(-1)!.text as string);
     expect(report).toMatchObject({ verification: 'interrupted', attempts: [], limitation: expect.stringContaining('no matching command') });
-  } finally { env.config.approvalMode = mode; await rm(directory, { recursive: true, force: true }); }
+  } finally { env.config.approvalMode = mode; await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
 it('preserves observed saved-edit uncertainty in its completion and never infers build success', async () => {
