@@ -200,6 +200,38 @@ describe('DeepLocalClient', () => {
     await expect(client.listModels()).resolves.toEqual([]);
   });
 
+  it('keeps an active SSE stream alive beyond the configured timeout', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.write('data: {"choices":[{"delta":{"content":"first"}}]}\\n\\n');
+      const next = setTimeout(() => {
+        res.write('data: {"choices":[{"delta":{"content":"second"}}]}\\n\\n');
+        setTimeout(() => res.end('data: [DONE]\\n\\n'), 600);
+      }, 600);
+      res.on('close', () => clearTimeout(next));
+    });
+    const client = new DeepLocalClient(logger, () => config(server!.baseUrl, 1000));
+    const events: StreamEvent[] = [];
+    for await (const event of client.streamChat('active-stream', request)) events.push(event);
+    expect(events).toEqual([
+      { kind: 'text', value: 'first' },
+      { kind: 'text', value: 'second' },
+    ]);
+  });
+
+  it('times out an SSE stream that stops sending data', async () => {
+    server = await startFakeServer((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.write('data: {"choices":[{"delta":{"content":"first"}}]}\\n\\n');
+    });
+    const client = new DeepLocalClient(logger, () => config(server!.baseUrl, 1000));
+    const events: StreamEvent[] = [];
+    await expect(async () => {
+      for await (const event of client.streamChat('idle-stream', request)) events.push(event);
+    }).rejects.toThrow('timed out while waiting for the response or stream activity');
+    expect(events).toEqual([{ kind: 'text', value: 'first' }]);
+  });
+
   it('times out requests without a server response', async () => {
     server = await startFakeServer(() => {});
     const client = new DeepLocalClient(logger, () => config(server!.baseUrl, 30));
