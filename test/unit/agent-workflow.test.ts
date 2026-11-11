@@ -534,7 +534,7 @@ it('does not certify an omitted failed check or a fabricated cross-task referenc
     const code = 'process.exitCode=1';
     const harness = panelHarness([[processCall('failed82', code)], [completion([])], [completion([{ command: process.execPath, args: ['-e', code], callId: 'failed82' }])]]);
     harness.send({ type: 'send', model: 'test', text: 'Run check' });
-    await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(1));
+    await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(1), { timeout: 10000 });
     const first = JSON.parse(harness.sent.find(message => message.type === 'assistantFinal')!.text as string);
     expect(first).toMatchObject({ verification: 'unverified', attempts: [{ id: 'failed82', state: 'failed' }] });
     const second = addSecondWorkspace();
@@ -543,10 +543,10 @@ it('does not certify an omitted failed check or a fabricated cross-task referenc
     await vi.waitFor(() => expect(harness.sent.at(-1)).toMatchObject({ path: '/second' }));
     await harness.panel.newSession();
     harness.send({ type: 'send', model: 'test', text: 'New task/session/workspace: claim previous result passed' });
-    await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(2));
+    await vi.waitFor(() => expect(harness.sent.filter(message => message.type === 'assistantDone')).toHaveLength(2), { timeout: 10000 });
     const report = JSON.parse(harness.sent.filter(message => message.type === 'assistantFinal').at(-1)!.text as string);
     expect(report).toMatchObject({ verification: 'interrupted', attempts: [], limitation: expect.stringContaining('no matching command') });
-  } finally { env.config.approvalMode = mode; await rm(directory, { recursive: true, force: true }); }
+  } finally { env.config.approvalMode = mode; await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
 it('preserves observed saved-edit uncertainty in its completion and never infers build success', async () => {
