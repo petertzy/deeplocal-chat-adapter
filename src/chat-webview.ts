@@ -274,12 +274,12 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   }
   function appendInlineMarkdown(parent, text) {
     // Build text nodes and formatting elements; model HTML is never interpreted.
-    const pattern = /(\*\*|__)(.+?)\1|(\*|_)([^*_\n]+?)\3|`([^`\n]+)`/g;
+    const pattern = /(\*\*|__)(.+?)\1|(\*|_)([^*_\n]+?)\3/g;
     let cursor = 0;
     let match;
     while ((match = pattern.exec(text))) {
       if (match.index > cursor) parent.append(document.createTextNode(text.slice(cursor, match.index)));
-      const node = document.createElement(match[1] ? 'strong' : match[3] ? 'em' : 'code');
+      const node = document.createElement(match[1] ? 'strong' : 'em');
       node.textContent = match[2] || match[4] || match[5] || '';
       parent.append(node);
       cursor = pattern.lastIndex;
