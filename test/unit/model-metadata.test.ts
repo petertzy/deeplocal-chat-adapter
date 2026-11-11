@@ -22,6 +22,16 @@ describe('per-model metadata', () => {
       .toMatchObject({ maxInputTokens: 32768, maxOutputTokens: 16384, toolCalling: true });
   });
 
+  it('does not advertise agent tool support for the deepLocal desktop API', () => {
+    const desktopModel = { id: 'gemma', owned_by: 'deeplocal', status: 'loaded' };
+    const result = modelInformation(desktopModel, config);
+    expect(result).toMatchObject({ compatible: true, toolCalling: false });
+    expect(result.reason).toContain('Switch to Chat mode');
+    expect(modelInformation({ ...desktopModel, supports_tool_calls: true }, config).toolCalling).toBe(false);
+    expect(modelInformation({ id: 'custom-local' }, config).toolCalling).toBe(true);
+    expect(modelInformation(desktopModel, { ...config, backend: 'remote' }).toolCalling).toBe(true);
+  });
+
   it('falls back for missing and malformed fields without coercing values', () => {
     for (const model of [undefined, { id: 'bad', context_length: -1, max_input_tokens: '8192',
       max_output_tokens: Infinity, capabilities: { tool_calling: 'false' }, protocol: 42 }]) {
