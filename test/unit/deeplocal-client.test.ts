@@ -203,10 +203,10 @@ describe('DeepLocalClient', () => {
   it('keeps an active SSE stream alive beyond the configured timeout', async () => {
     server = await startFakeServer((_req, res) => {
       res.setHeader('content-type', 'text/event-stream');
-      res.write('data: {"choices":[{"delta":{"content":"first"}}]}\\n\\n');
+      res.write('data: {"choices":[{"delta":{"content":"first"}}]}\n\n');
       const next = setTimeout(() => {
-        res.write('data: {"choices":[{"delta":{"content":"second"}}]}\\n\\n');
-        setTimeout(() => res.end('data: [DONE]\\n\\n'), 600);
+        res.write('data: {"choices":[{"delta":{"content":"second"}}]}\n\n');
+        setTimeout(() => res.end('data: [DONE]\n\n'), 600);
       }, 600);
       res.on('close', () => clearTimeout(next));
     });
@@ -222,7 +222,7 @@ describe('DeepLocalClient', () => {
   it('times out an SSE stream that stops sending data', async () => {
     server = await startFakeServer((_req, res) => {
       res.setHeader('content-type', 'text/event-stream');
-      res.write('data: {"choices":[{"delta":{"content":"first"}}]}\\n\\n');
+      res.write('data: {"choices":[{"delta":{"content":"first"}}]}\n\n');
     });
     const client = new DeepLocalClient(logger, () => config(server!.baseUrl, 1000));
     const events: StreamEvent[] = [];
