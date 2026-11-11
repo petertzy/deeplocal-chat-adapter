@@ -43,6 +43,11 @@ export function renderChatHtml(webview: { cspSource: string }): string {
   .message.user { padding: 10px 12px; border: 1px solid var(--vscode-panel-border, #ffffff20); border-radius: 8px; background: var(--vscode-editor-background, #1f1f1f); }
   .role { font-size: 10px; font-weight: 650; letter-spacing: .7px; text-transform: uppercase; margin-bottom: 5px; color: var(--vscode-descriptionForeground, #999); }
   .prose { white-space: pre-wrap; }
+  .markdown p { margin: 6px 0; }
+  .markdown ul, .markdown ol { margin: 6px 0; padding-left: 22px; }
+  .markdown li { margin: 3px 0; }
+  .markdown h2, .markdown h3, .markdown h4, .markdown h5 { margin: 12px 0 6px; line-height: 1.4; }
+  .markdown code { font-family: var(--vscode-editor-font-family, monospace); background: var(--vscode-textCodeBlock-background, #222); padding: 1px 3px; border-radius: 3px; }
   .message-actions { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11px; }
   .message-actions button { flex-shrink: 0; }
   .message.error { border-left: 2px solid var(--vscode-errorForeground, #f48771); padding-left: 10px; }
@@ -250,12 +255,84 @@ export function renderChatHtml(webview: { cspSource: string }): string {
       if (show) byId(panel).querySelector('button').focus();
     }
   }
+  function decodeModelEntities(text) {
+    // Decode common exported Markdown entities as text, never as HTML.
+    return text.replace(/&#(x[0-9a-f]+|[0-9]+);/gi, (match, value) => {
+      const number = value[0].toLowerCase() === 'x' ? parseInt(value.slice(1), 16) : parseInt(value, 10);
+      return number > 0 && number <= 0x10ffff && !(number >= 0xd800 && number <= 0xdfff)
+        ? String.fromCodePoint(number) : match;
+    }).replace(/&(?:amp|lt|gt|quot|apos|nbsp);/g, match => ({
+      '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
+      '&apos;': "'", '&nbsp;': ' '
+    })[match] || match);
+  }
+  function normalizeModelMarkdown(text) {
+    return decodeModelEntities(String(text || ''))
+      .replace(/\\([*_\`~])/g, '$1')
+      .replace(/\\[ \t]*(?:\r?\n|$)/g, '\n')
+      .replace(/\r\n?/g, '\n');
+  }
+  function appendInlineMarkdown(parent, text) {
+    // Build text nodes and formatting elements; model HTML is never interpreted.
+    const pattern = /(\*\*|__)(.+?)\1|(\*|_)([^*_\n]+?)\3/g;
+    let cursor = 0;
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (match.index > cursor) parent.append(document.createTextNode(text.slice(cursor, match.index)));
+      const node = document.createElement(match[1] ? 'strong' : 'em');
+      node.textContent = match[2] || match[4] || match[5] || '';
+      parent.append(node);
+      cursor = pattern.lastIndex;
+    }
+    if (cursor < text.length) parent.append(document.createTextNode(text.slice(cursor)));
+  }
+  function appendMarkdownProse(body, text) {
+    const lines = text.split('\n');
+    let list = null;
+    let paragraph = [];
+    function flushParagraph() {
+      if (!paragraph.length) return;
+      const node = document.createElement('p');
+      appendInlineMarkdown(node, paragraph.join('\n'));
+      body.append(node);
+      paragraph = [];
+    }
+    for (const line of lines) {
+      const heading = /^(#{1,4})\s+(.+)$/.exec(line);
+      const bullet = /^\s*[-*+]\s+(.+)$/.exec(line);
+      const numbered = /^\s*\d+[.)]\s+(.+)$/.exec(line);
+      if (heading) {
+        flushParagraph();
+        list = null;
+        const node = document.createElement('h' + Math.min(heading[1].length + 1, 5));
+        appendInlineMarkdown(node, heading[2]);
+        body.append(node);
+      } else if (bullet || numbered) {
+        flushParagraph();
+        const kind = bullet ? 'ul' : 'ol';
+        if (!list || list.tagName.toLowerCase() !== kind) {
+          list = document.createElement(kind);
+          body.append(list);
+        }
+        const item = document.createElement('li');
+        appendInlineMarkdown(item, (bullet || numbered)[1]);
+        list.append(item);
+      } else if (!line.trim()) {
+        flushParagraph();
+        list = null;
+      } else {
+        list = null;
+        paragraph.push(line);
+      }
+    }
+    flushParagraph();
+  }
   function renderBody(body, text) {
-    // Treat model text as data. Never render model-provided HTML.
+    // Model text is untrusted. Never assign model output to innerHTML.
     const expanded = [...body.querySelectorAll('details')].map(node => node.open);
     body.replaceChildren();
     const fence = String.fromCharCode(96).repeat(3);
-    const parts = text.split(fence);
+    const parts = normalizeModelMarkdown(text).split(fence);
     let detailIndex = 0;
     parts.forEach((part, index) => {
       if (!part) return;
@@ -271,7 +348,9 @@ export function renderChatHtml(webview: { cspSource: string }): string {
         detail.open = expanded[detailIndex++] || false;
         detail.append(summary, pre); body.append(detail);
       } else {
-        const prose = document.createElement('div'); prose.className = 'prose'; prose.textContent = part; body.append(prose);
+        const prose = document.createElement('div'); prose.className = 'prose markdown';
+        appendMarkdownProse(prose, part);
+        body.append(prose);
       }
     });
   }
