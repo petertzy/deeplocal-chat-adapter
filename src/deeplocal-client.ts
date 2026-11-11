@@ -23,6 +23,7 @@ interface RequestContext {
   response: Response;
   signal: AbortSignal;
   timedOut: () => boolean;
+  refreshTimeout: () => void;
   cleanup: () => void;
 }
 
@@ -133,7 +134,13 @@ export class DeepLocalClient {
         });
         try {
           if (!request.response.body) throw new Error('Responses API returned an empty response body.');
-          yield* readResponses(request.response.body, source, body.model, summary);
+          const monitored = request.response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              request.refreshTimeout();
+              controller.enqueue(chunk);
+            },
+          }));
+          yield* readResponses(monitored, source, body.model, summary);
         } catch (error) {
           throw this.requestError(request, error);
         } finally { request.cleanup(); }
@@ -167,6 +174,7 @@ export class DeepLocalClient {
             break;
           }
 
+          request.refreshTimeout();
           bufferedText += decoder.decode(value, { stream: true });
           const split = splitSseLines(bufferedText);
           bufferedText = split.remainder;
@@ -273,8 +281,8 @@ export class DeepLocalClient {
 
   private requestError(request: RequestContext, error: unknown): Error {
     if (request.timedOut()) {
-      this.logger.warning('DeepLocal request timed out while waiting for the response or stream body.');
-      return new Error('DeepLocal request timed out while waiting for the response or stream body.');
+      this.logger.warning('DeepLocal request timed out while waiting for the response or stream activity.');
+      return new Error('DeepLocal request timed out while waiting for the response or stream activity.');
     }
     if (request.signal.aborted) {
       this.logger.info('DeepLocal request cancelled by the user.');
@@ -294,7 +302,15 @@ export class DeepLocalClient {
     const url = `${config.baseUrl}${path}`;
     const controller = new AbortController();
     let timedOut = false;
-    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(config.requestTimeout, 1000));
+    // The configured timeout limits inactivity, not the total duration of a stream.
+    // Local inference may take longer than this while still producing tokens.
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const refreshTimeout = () => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (controller.signal.aborted) return;
+      timeout = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(config.requestTimeout, 1000));
+    };
+    refreshTimeout();
     const upstreamSignal = init.signal;
     const onAbort = () => controller.abort();
 
@@ -320,6 +336,7 @@ export class DeepLocalClient {
         },
       };
       let response = await fetch(url, requestInit);
+      refreshTimeout();
       let responseBody = '';
 
       if (!response.ok) {
@@ -330,6 +347,7 @@ export class DeepLocalClient {
         if (response.status === 400 && retryBody) {
           this.logger.info('Remote API requested reasoning_effort=none for function tools; retrying once with tools preserved.');
           response = await fetch(url, { ...requestInit, body: retryBody });
+          refreshTimeout();
           responseBody = response.ok ? '' : await response.text().catch(() => '');
         }
       }
@@ -351,14 +369,15 @@ export class DeepLocalClient {
         response,
         signal: controller.signal,
         timedOut: () => timedOut,
+        refreshTimeout,
         cleanup: () => {
-          clearTimeout(timeout);
+          if (timeout !== undefined) clearTimeout(timeout);
           upstreamSignal?.removeEventListener('abort', onAbort);
         },
       };
     } catch (error) {
-      const context = { response: undefined as never, signal: controller.signal, timedOut: () => timedOut, cleanup: () => {
-        clearTimeout(timeout);
+      const context = { response: undefined as never, signal: controller.signal, timedOut: () => timedOut, refreshTimeout, cleanup: () => {
+        if (timeout !== undefined) clearTimeout(timeout);
         upstreamSignal?.removeEventListener('abort', onAbort);
       } };
       throw this.requestError(context, error);
